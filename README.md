@@ -1,15 +1,15 @@
-# @sahara/x509-trust
+# x509-trust
 
 A Node.js package for X.509 certificate chain and revocation validation using PKI.js.
 
 ```sh
-npm install @sahara/x509-trust
+npm install x509-trust
 ```
 
 Requires Node.js 24 or later. Create a validator once and reuse it across requests:
 
 ```typescript
-import { createTrustValidator } from "@sahara/x509-trust";
+import { createTrustValidator } from "x509-trust";
 
 const validator = createTrustValidator({
   trustAnchors: [rootCertificate]
