@@ -29,7 +29,7 @@
     "format": "biome check --write .",
     "format:check": "biome check .",
     "test": "node --test test/*.test.ts",
-    "prepare": "husky",
+    "prepare": "husky && npm run build",
     "prepack": "npm run build"
   },
   "lint-staged": {
