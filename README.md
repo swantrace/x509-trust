@@ -4,12 +4,19 @@ A Node.js package for X.509 certificate chain and revocation validation using PK
 
 The internal `validateCertificatePath()` function validates certificate paths,
 signatures, and validity dates using PKI.js. The package entry point does not
-export a public validation API yet; CRL/OCSP checks are not implemented.
+export a public validation API yet; OCSP checks are not implemented.
 
 The internal `getRevocationEndpoints()` function accepts a parsed PKI.js
 certificate and extracts CRL distribution point URIs and OCSP responder URIs.
 Missing extensions produce empty arrays; malformed extensions throw an error.
 The function preserves multiple addresses and does not fetch or validate URLs.
+
+The internal `validateCrl()` function checks a DER-encoded, direct, complete CRL
+against a certificate and its issuer from a validated path. It verifies the CRL
+issuer, signing permission, signature, validity interval, and revocation records,
+returning `good`, `revoked`, or `unknown`. Missing `nextUpdate`, unsupported CRL
+scope or delta extensions, and unusable CRLs produce `unknown`. It does not fetch
+or cache CRLs.
 
 Requires Node.js 24 or later.
 
