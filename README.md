@@ -6,6 +6,11 @@ The internal `validateCertificatePath()` function validates certificate paths,
 signatures, and validity dates using PKI.js. The package entry point does not
 export a public validation API yet; CRL/OCSP checks are not implemented.
 
+The internal `getRevocationEndpoints()` function accepts a parsed PKI.js
+certificate and extracts CRL distribution point URIs and OCSP responder URIs.
+Missing extensions produce empty arrays; malformed extensions throw an error.
+The function preserves multiple addresses and does not fetch or validate URLs.
+
 Requires Node.js 24 or later.
 
 ```sh

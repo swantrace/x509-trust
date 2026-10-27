@@ -1,0 +1,140 @@
+import assert from "node:assert/strict";
+import { X509Certificate } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { test } from "node:test";
+import {
+  AccessDescription,
+  Certificate,
+  CRLDistributionPoints,
+  DistributionPoint,
+  Extension,
+  GeneralName,
+  InfoAccess,
+  RelativeDistinguishedNames,
+  id_AuthorityInfoAccess,
+  id_CRLDistributionPoints,
+  id_ad_caIssuers,
+  id_ad_ocsp
+} from "pkijs";
+import { getRevocationEndpoints } from "../src/revocation-endpoints.ts";
+
+for (const [name, issuer] of [
+  ["leaf", "intermediate"],
+  ["revoked-leaf", "intermediate"],
+  ["intermediate", "root"]
+]) {
+  test(`extracts the issuing CA's CRL and OCSP addresses from ${name}.pem`, () => {
+    const pem = readFileSync(new URL(`./fixtures/${name}.pem`, import.meta.url));
+    const certificate = Certificate.fromBER(new X509Certificate(pem).raw);
+
+    assert.deepEqual(getRevocationEndpoints(certificate), {
+      crlUrls: [`http://crl.example.test/${issuer}.crl`],
+      ocspUrls: [`http://ocsp.example.test/${issuer}`]
+    });
+  });
+}
+
+test("returns empty arrays when a root has no revocation extensions", () => {
+  const pem = readFileSync(new URL("./fixtures/root.pem", import.meta.url));
+  const certificate = Certificate.fromBER(new X509Certificate(pem).raw);
+
+  assert.deepEqual(getRevocationEndpoints(certificate), {
+    crlUrls: [],
+    ocspUrls: []
+  });
+});
+
+test("returns empty arrays when a certificate has no extensions", () => {
+  assert.deepEqual(getRevocationEndpoints(new Certificate()), {
+    crlUrls: [],
+    ocspUrls: []
+  });
+});
+
+test("keeps multiple addresses in order and excludes issuer locations and non-URI names", () => {
+  const certificate = new Certificate({
+    extensions: [
+      new Extension({
+        extnID: id_CRLDistributionPoints,
+        parsedValue: new CRLDistributionPoints({
+          distributionPoints: [
+            new DistributionPoint({
+              distributionPoint: [
+                new GeneralName({ type: 6, value: "http://primary.test/ca.crl" }),
+                new GeneralName({ type: 2, value: "crl.example.test" }),
+                new GeneralName({ type: 6, value: "http://backup.test/ca.crl" })
+              ],
+              cRLIssuer: [
+                new GeneralName({ type: 6, value: "https://issuer.test/identity" })
+              ]
+            }),
+            new DistributionPoint({
+              distributionPoint: new RelativeDistinguishedNames()
+            }),
+            new DistributionPoint({
+              distributionPoint: [
+                new GeneralName({ type: 6, value: "http://other.test/ca.crl" })
+              ]
+            })
+          ]
+        })
+      }),
+      new Extension({
+        extnID: id_AuthorityInfoAccess,
+        parsedValue: new InfoAccess({
+          accessDescriptions: [
+            new AccessDescription({
+              accessMethod: id_ad_ocsp,
+              accessLocation: new GeneralName({
+                type: 6,
+                value: "http://primary.test/ocsp"
+              })
+            }),
+            new AccessDescription({
+              accessMethod: id_ad_caIssuers,
+              accessLocation: new GeneralName({
+                type: 6,
+                value: "http://issuer.test/ca.cer"
+              })
+            }),
+            new AccessDescription({
+              accessMethod: id_ad_ocsp,
+              accessLocation: new GeneralName({
+                type: 2,
+                value: "ocsp.example.test"
+              })
+            }),
+            new AccessDescription({
+              accessMethod: id_ad_ocsp,
+              accessLocation: new GeneralName({
+                type: 6,
+                value: "http://backup.test/ocsp"
+              })
+            })
+          ]
+        })
+      })
+    ]
+  });
+
+  assert.deepEqual(getRevocationEndpoints(certificate), {
+    crlUrls: [
+      "http://primary.test/ca.crl",
+      "http://backup.test/ca.crl",
+      "http://other.test/ca.crl"
+    ],
+    ocspUrls: ["http://primary.test/ocsp", "http://backup.test/ocsp"]
+  });
+});
+
+for (const extnID of [id_CRLDistributionPoints, id_AuthorityInfoAccess]) {
+  test(`rejects a malformed ${extnID} extension instead of treating it as missing`, () => {
+    const certificate = new Certificate({
+      extensions: [
+        new Extension({ extnID, extnValue: new Uint8Array([0x05, 0x00]).buffer })
+      ]
+    });
+
+    assert.throws(() => getRevocationEndpoints(certificate), TypeError);
+  });
+}
