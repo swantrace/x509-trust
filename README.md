@@ -21,3 +21,5 @@ Tests use committed certificates and a fixed validation time derived from the
 fixtures, so running tests does not require certificate generation. To regenerate
 the fixtures with OpenSSL, run `bash test/fixtures/generate.sh`. Private keys are
 temporary and are deleted when the script exits.
+
+Revocation fixtures are documented in [test/fixtures/README.md](test/fixtures/README.md).
