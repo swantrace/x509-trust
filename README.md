@@ -27,6 +27,13 @@ imports on save. Run `npm run format` to apply both actions from the terminal,
 or `npm run format:check` to check them without changing files. Formatting uses
 two spaces, double quotes, semicolons, and no trailing commas.
 
+`npm ci` also installs the Husky pre-commit hook. Before each commit,
+lint-staged formats staged JavaScript, TypeScript, and JSON files and organizes
+their imports, then adds the changes to the commit.
+
+GitHub Actions checks formatting, types, tests, builds, and package contents on
+pull requests targeting `main` and pushes to `main`.
+
 Tests use committed certificates and a fixed validation time derived from the
 fixtures, so running tests does not require certificate generation. To regenerate
 the fixtures with OpenSSL, run `bash test/fixtures/generate.sh`. Private keys are
