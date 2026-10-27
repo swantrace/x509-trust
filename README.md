@@ -2,7 +2,9 @@
 
 A Node.js package for X.509 certificate chain and revocation validation using PKI.js.
 
-The package is being initialized. Certificate validation and CRL/OCSP retrieval are not implemented yet.
+The internal `validateCertificatePath()` function validates certificate paths,
+signatures, and validity dates using PKI.js. The package entry point does not
+export a public validation API yet; CRL/OCSP checks are not implemented.
 
 Requires Node.js 24 or later.
 
@@ -10,6 +12,12 @@ Requires Node.js 24 or later.
 npm ci
 npm run typecheck
 npm run build
+npm test
 ```
 
 Source files live in `src/`. The build produces JavaScript and TypeScript declaration files in `dist/`.
+
+Tests use committed certificates and a fixed validation time derived from the
+fixtures, so running tests does not require certificate generation. To regenerate
+the fixtures with OpenSSL, run `bash test/fixtures/generate.sh`. Private keys are
+temporary and are deleted when the script exits.
