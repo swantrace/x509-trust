@@ -8,9 +8,7 @@ Requires Node.js 24 or later. Create a validator once and reuse it across reques
 import { createTrustValidator } from "@sahara/x509-trust";
 
 const validator = createTrustValidator({
-  trustAnchors: [rootCertificate],
-  loadCrl,
-  loadOcsp
+  trustAnchors: [rootCertificate]
 });
 
 const result = await validator.verify({
@@ -35,8 +33,37 @@ checked for revocation. OCSP addresses are tried first, followed by CRL addresse
 when OCSP is unavailable or inconclusive. A verified revoked status stops
 validation immediately; a fallback cannot override it.
 
-Network fetching is not built in yet. Supply application callbacks that return
-DER bytes from approved sources:
+By default the validator downloads CRLs with HTTP GET and sends DER OCSP requests
+with HTTP POST to the certificate's advertised addresses. CRL downloads may be
+DER or PEM. OCSP requests identify the target certificate and issuer, are
+unsigned, and omit the optional nonce; response signatures and freshness are
+verified before use.
+
+Configure the built-in transport with `http`:
+
+```typescript
+const validator = createTrustValidator({
+  trustAnchors: [rootCertificate],
+  http: {
+    timeoutMs: 5000,
+    maxResponseBytes: 5 * 1024 * 1024,
+    allowedOrigins: ["https://ca.example.org", "http://ocsp.example.org"]
+  }
+});
+```
+
+The defaults are a five-second deadline for each request, including its body,
+and a five-MiB response limit. Redirects are rejected. HTTP(S) URLs with embedded
+credentials or fragments are rejected. Only public IPv4 and global-unicast IPv6
+destinations are permitted by default, with DNS addresses checked as part of
+establishing each connection. `allowedOrigins` can further restrict destinations.
+For local tests or private CA infrastructure, explicitly set
+`http.allowPrivateAddresses: true`, preferably with an origin allowlist.
+
+Custom `loadCrl` and `loadOcsp` callbacks remain optional overrides. Set either
+option to `false` to disable that mechanism; disabling both still fails
+revocation validation. Override callbacks return DER bytes and have these
+signatures:
 
 ```typescript
 type LoadCrl = (url: string) => Promise<Uint8Array>;
@@ -49,10 +76,10 @@ type LoadOcsp = (request: {
 ```
 
 These callback signatures describe application-provided implementations, not
-functions exported by this package. Loaders own network access controls,
-timeouts, and response size limits. At least one loader is needed to complete
-validation. Missing endpoints, missing loaders, loading failures, or unusable
-evidence result in `REVOCATION_STATUS_UNKNOWN` unless another source succeeds.
+functions exported by this package. The `http` settings apply only to built-in
+loaders; overrides own their network controls and limits. Missing endpoints,
+disabled loaders, loading failures, or unusable evidence result in
+`REVOCATION_STATUS_UNKNOWN` unless another source succeeds.
 
 Successful results contain `valid: true`, a leaf-first DER `certificatePath`
 including the selected anchor, and `trustAnchorFingerprint256`. Failures contain
@@ -87,8 +114,6 @@ be adapted without adding Redis as a dependency of this package:
 ```typescript
 const validator = createTrustValidator({
   trustAnchors: [rootCertificate],
-  loadCrl,
-  loadOcsp,
   cacheKeyPrefix: "sahara:x509-trust:revocation:v1",
   cache: {
     get: (key) => redisClient.get(key),
@@ -132,5 +157,9 @@ Tests use committed certificates and a fixed validation time derived from the
 fixtures, so running tests does not require certificate generation. To regenerate
 the fixtures with OpenSSL, run `bash test/fixtures/generate.sh`. Private keys are
 temporary and are deleted when the script exits.
+
+HTTP tests start temporary Node.js servers on random loopback ports and close
+them automatically. They exercise downloads, OCSP requests, fallback, caching,
+deadlines, size limits, and destination restrictions without external services.
 
 Revocation fixtures are documented in [test/fixtures/README.md](test/fixtures/README.md).

@@ -6,20 +6,20 @@ import {
   validateCertificatePath
 } from "./certificate-path.ts";
 import type { CrlValidationResult } from "./crl.ts";
+import {
+  createHttpLoaders,
+  type HttpOptions,
+  type OcspLoadOptions
+} from "./http-loaders.ts";
 import type { OcspValidationResult } from "./ocsp.ts";
 import { createRevocationChecker } from "./revocation-checker.ts";
 import { getRevocationEndpoints } from "./revocation-endpoints.ts";
 
-export interface OcspLoadOptions {
-  url: string;
-  certificate: Uint8Array;
-  issuerCertificate: Uint8Array;
-}
-
 export interface TrustValidatorOptions {
   trustAnchors: readonly CertificateInput[];
-  loadCrl?: (url: string) => Promise<Uint8Array>;
-  loadOcsp?: (options: OcspLoadOptions) => Promise<Uint8Array>;
+  loadCrl?: ((url: string) => Promise<Uint8Array>) | false;
+  loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
+  http?: HttpOptions;
   cache?: CacheStore;
   maxCacheAgeMs?: number;
   cacheKeyPrefix?: string;
@@ -62,6 +62,7 @@ export function createTrustValidator({
   trustAnchors,
   loadCrl,
   loadOcsp,
+  http,
   cache,
   maxCacheAgeMs,
   cacheKeyPrefix,
@@ -71,6 +72,9 @@ export function createTrustValidator({
     throw new TypeError("trustAnchors must contain at least one certificate");
   }
   const anchors = trustAnchors.map((input) => new X509Certificate(input).raw);
+  const defaults = createHttpLoaders(http);
+  const crlLoader = loadCrl ?? defaults.loadCrl;
+  const ocspLoader = loadOcsp ?? defaults.loadOcsp;
   const checker = createRevocationChecker({
     cache,
     maxCacheAgeMs,
@@ -96,7 +100,7 @@ export function createTrustValidator({
     const attempts: Array<
       () => Promise<CrlValidationResult | OcspValidationResult>
     > = [];
-    if (loadOcsp) {
+    if (ocspLoader) {
       for (const url of endpoints.ocspUrls) {
         attempts.push(() =>
           checker.checkOcsp({
@@ -105,7 +109,7 @@ export function createTrustValidator({
             source: url,
             checkDate,
             load: () =>
-              loadOcsp({
+              ocspLoader({
                 url,
                 certificate: new Uint8Array(
                   certificate.toSchema().toBER(false)
@@ -118,7 +122,7 @@ export function createTrustValidator({
         );
       }
     }
-    if (loadCrl) {
+    if (crlLoader) {
       for (const url of endpoints.crlUrls) {
         attempts.push(() =>
           checker.checkCrl({
@@ -126,7 +130,7 @@ export function createTrustValidator({
             issuerCertificate,
             source: url,
             checkDate,
-            load: () => loadCrl(url)
+            load: () => crlLoader(url)
           })
         );
       }
