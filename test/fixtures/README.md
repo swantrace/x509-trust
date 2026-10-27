@@ -38,4 +38,4 @@ different fixtures to test freshness and cache updates.
 
 CA databases, requests, and private keys exist only in a temporary directory and
 are deleted when generation finishes. These fixtures prepare for revocation
-tests. Local CRL validation uses these files; OCSP validation is not implemented yet.
+tests. Local CRL and direct-issuer OCSP validation use these files.
