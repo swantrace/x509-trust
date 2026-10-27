@@ -5,7 +5,10 @@ import { test } from "node:test";
 import { validateCertificatePath } from "../src/certificate-path.ts";
 
 function readFixture(name: string): string {
-  return readFileSync(new URL(`./fixtures/${name}.pem`, import.meta.url), "utf8");
+  return readFileSync(
+    new URL(`./fixtures/${name}.pem`, import.meta.url),
+    "utf8"
+  );
 }
 
 const root = readFixture("root");
@@ -39,7 +42,10 @@ test("validates a leaf-first chain ending at a configured trust anchor", async (
 
 test("accepts DER certificates and adds the configured root to the path", async () => {
   const result = await validateCertificatePath({
-    certificateChain: [leafCertificate.raw, new X509Certificate(intermediate).raw],
+    certificateChain: [
+      leafCertificate.raw,
+      new X509Certificate(intermediate).raw
+    ],
     trustAnchors: [new X509Certificate(root).raw],
     checkDate
   });

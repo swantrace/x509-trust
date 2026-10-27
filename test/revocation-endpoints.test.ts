@@ -10,11 +10,11 @@ import {
   Extension,
   GeneralName,
   InfoAccess,
-  RelativeDistinguishedNames,
   id_AuthorityInfoAccess,
-  id_CRLDistributionPoints,
   id_ad_caIssuers,
-  id_ad_ocsp
+  id_ad_ocsp,
+  id_CRLDistributionPoints,
+  RelativeDistinguishedNames
 } from "pkijs";
 import { getRevocationEndpoints } from "../src/revocation-endpoints.ts";
 
@@ -24,7 +24,9 @@ for (const [name, issuer] of [
   ["intermediate", "root"]
 ]) {
   test(`extracts the issuing CA's CRL and OCSP addresses from ${name}.pem`, () => {
-    const pem = readFileSync(new URL(`./fixtures/${name}.pem`, import.meta.url));
+    const pem = readFileSync(
+      new URL(`./fixtures/${name}.pem`, import.meta.url)
+    );
     const certificate = Certificate.fromBER(new X509Certificate(pem).raw);
 
     assert.deepEqual(getRevocationEndpoints(certificate), {
@@ -60,12 +62,18 @@ test("keeps multiple addresses in order and excludes issuer locations and non-UR
           distributionPoints: [
             new DistributionPoint({
               distributionPoint: [
-                new GeneralName({ type: 6, value: "http://primary.test/ca.crl" }),
+                new GeneralName({
+                  type: 6,
+                  value: "http://primary.test/ca.crl"
+                }),
                 new GeneralName({ type: 2, value: "crl.example.test" }),
                 new GeneralName({ type: 6, value: "http://backup.test/ca.crl" })
               ],
               cRLIssuer: [
-                new GeneralName({ type: 6, value: "https://issuer.test/identity" })
+                new GeneralName({
+                  type: 6,
+                  value: "https://issuer.test/identity"
+                })
               ]
             }),
             new DistributionPoint({
@@ -131,7 +139,10 @@ for (const extnID of [id_CRLDistributionPoints, id_AuthorityInfoAccess]) {
   test(`rejects a malformed ${extnID} extension instead of treating it as missing`, () => {
     const certificate = new Certificate({
       extensions: [
-        new Extension({ extnID, extnValue: new Uint8Array([0x05, 0x00]).buffer })
+        new Extension({
+          extnID,
+          extnValue: new Uint8Array([0x05, 0x00]).buffer
+        })
       ]
     });
 

@@ -22,6 +22,11 @@ npm test
 
 Source files live in `src/`. The build produces JavaScript and TypeScript declaration files in `dist/`.
 
+Install the recommended Biome extension in VS Code to format code and organize
+imports on save. Run `npm run format` to apply both actions from the terminal,
+or `npm run format:check` to check them without changing files. Formatting uses
+two spaces, double quotes, semicolons, and no trailing commas.
+
 Tests use committed certificates and a fixed validation time derived from the
 fixtures, so running tests does not require certificate generation. To regenerate
 the fixtures with OpenSSL, run `bash test/fixtures/generate.sh`. Private keys are
