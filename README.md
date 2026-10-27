@@ -35,7 +35,8 @@ trust: including a root in the supplied chain does not make it trusted.
 ## API
 
 These types describe the public API and can be imported from `x509-trust`.
-The package also exports `createTrustValidator()` and `createMemoryCache()`.
+The package also exports `createTrustValidator()`, `createMemoryCache()`, and
+`getUriSubjectAlternativeNames()`.
 
 ```typescript
 type CertificateInput = string | Uint8Array;
@@ -82,6 +83,8 @@ interface TrustValidator {
 
 function createTrustValidator(options: TrustValidatorOptions): TrustValidator;
 
+function getUriSubjectAlternativeNames(certificate: CertificateInput): string[];
+
 function createMemoryCache(options?: {
   maxEntries?: number;
   now?: () => number;
@@ -121,6 +124,7 @@ type ValidationResult =
       valid: true;
       certificatePath: Uint8Array[];
       trustAnchorFingerprint256: string;
+      leafUriSubjectAlternativeNames: string[];
     }
   | {
       valid: false;
@@ -134,6 +138,13 @@ On success, `certificatePath` contains the validated path as DER bytes, leaf
 first and including the selected trust anchor. `trustAnchorFingerprint256` is
 that anchor's SHA-256 fingerprint. These fields let applications inspect the
 selected path or record which anchor established trust.
+
+`leafUriSubjectAlternativeNames` contains the leaf certificate's URI SAN entries,
+in their original order and without normalization. It is empty when the leaf has
+no URI SANs. Applications can use these values for protocol-specific issuer
+matching without parsing the certificate again. This field is returned only
+after path and revocation validation succeed; the library does not perform JWT
+issuer matching.
 
 | Failure code                  | Meaning                                                                               |
 | ----------------------------- | ------------------------------------------------------------------------------------- |
@@ -199,6 +210,27 @@ responsible for their protocol rules, such as matching a JWT issuer to a
 certificate SAN, verifying the JWT signature and claims, and deciding what the
 authenticated party may access. A successful certificate result alone does not
 establish UDAP compliance.
+
+## Reading URI subject alternative names
+
+Use `getUriSubjectAlternativeNames()` to extract URI entries from a certificate's
+Subject Alternative Name extension:
+
+```typescript
+import { getUriSubjectAlternativeNames } from "x509-trust";
+
+const uris = getUriSubjectAlternativeNames(clientCertificate);
+```
+
+The function accepts a PEM string or DER bytes and returns URI entries in their
+original order, without normalization. Other name types are excluded. A missing
+SAN extension or one with no URI entries returns `[]`; invalid certificates or
+malformed SAN extensions throw errors. Parsing the structured extension preserves
+commas within URI values.
+
+Extraction does not validate trust, revocation, or JWT claims. Applications must
+validate the certificate and apply their protocol's issuer matching rules. When
+using Node.js `X509Certificate` objects, pass `certificate.raw`.
 
 ## Retrieving revocation evidence
 

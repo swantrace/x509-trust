@@ -1,6 +1,7 @@
 import { X509Certificate } from "node:crypto";
 import { Certificate } from "pkijs";
 import type { CacheStore } from "./cache.ts";
+import { uriSubjectAlternativeNames } from "./certificate-names.ts";
 import {
   type CertificateInput,
   validateCertificatePath
@@ -44,6 +45,7 @@ export type ValidationResult =
       valid: true;
       certificatePath: Uint8Array[];
       trustAnchorFingerprint256: string;
+      leafUriSubjectAlternativeNames: string[];
     }
   | {
       valid: false;
@@ -174,6 +176,18 @@ export function createTrustValidator({
       const certificates = path.certificatePath.map((der) =>
         Certificate.fromBER(Uint8Array.from(der))
       );
+      let leafUriSubjectAlternativeNames: string[];
+      try {
+        leafUriSubjectAlternativeNames = uriSubjectAlternativeNames(
+          certificates[0]
+        );
+      } catch {
+        return {
+          valid: false,
+          code: "INVALID_CERTIFICATE",
+          message: "Invalid leaf subject alternative name extension"
+        };
+      }
       for (let index = 0; index < certificates.length - 1; index++) {
         const revocation = await checkCertificateRevocation(
           certificates[index],
@@ -202,7 +216,8 @@ export function createTrustValidator({
       return {
         valid: true,
         certificatePath: path.certificatePath,
-        trustAnchorFingerprint256: path.trustAnchorFingerprint256
+        trustAnchorFingerprint256: path.trustAnchorFingerprint256,
+        leafUriSubjectAlternativeNames
       };
     }
   };
