@@ -24,8 +24,8 @@
     "ocsp"
   ],
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc -p tsconfig.test.json",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.ts",
     "prepack": "npm run build"
   },

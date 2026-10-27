@@ -4,12 +4,10 @@
     "module": "NodeNext",
     "lib": ["ES2022", "DOM"],
     "types": ["node"],
-    "rootDir": "src",
-    "outDir": "dist",
-    "declaration": true,
     "strict": true,
     "verbatimModuleSyntax": true,
-    "noEmitOnError": true
+    "noEmit": true,
+    "allowImportingTsExtensions": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts"]
 }
