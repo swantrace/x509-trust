@@ -49,6 +49,7 @@ interface TrustValidatorOptions {
   maxCacheAgeMs?: number;
   cacheKeyPrefix?: string;
   now?: () => number;
+  onDiagnostic?: DiagnosticCallback;
 }
 
 interface OcspLoadOptions {
@@ -100,6 +101,7 @@ function createMemoryCache(options?: {
 | `maxCacheAgeMs`                  | `3600000` (1 hour)           | Maximum evidence cache age, also bounded by `nextUpdate`.                            |
 | `cacheKeyPrefix`                 | `"x509-trust:revocation:v1"` | Namespace for cache entries.                                                           |
 | `now`                            | `Date.now`                   | Clock returning epoch milliseconds.                                                    |
+| `onDiagnostic` | No callback | Receive detailed revocation and cache diagnostics using your application's logger. |
 | `verify().certificateChain`      | Required                       | Leaf certificate followed by intermediates.                                            |
 | `verify().checkDate`             | Current time from `now`      | Date at which to validate the path and revocation evidence.                            |
 | `createMemoryCache().maxEntries` | `256`                        | Maximum entries; the oldest inserted entry is evicted when full.                       |
@@ -251,6 +253,57 @@ The `http` settings apply only to built-in loaders. Custom loaders own their
 network restrictions, timeouts, and size limits. For historical validation,
 `checkDate` changes the validation date but does not retrieve historical evidence;
 provide suitable evidence through custom loaders.
+
+## Diagnostics
+
+Pass `onDiagnostic` to send detailed revocation and cache events to your existing
+logger or monitoring system. The library does not log automatically or require
+a logging dependency.
+
+```typescript
+const validator = createTrustValidator({
+  trustAnchors: [rootCertificate],
+  onDiagnostic(event) {
+    logger.debug(event);
+  }
+});
+```
+
+`logger` is supplied by the application. The exported diagnostic types are:
+
+```typescript
+interface DiagnosticEvent {
+  event:
+    | "cache_hit"
+    | "cache_miss"
+    | "cache_discarded"
+    | "cache_error"
+    | "revocation_result"
+    | "revocation_error";
+  mechanism: "crl" | "ocsp";
+  certificateIndex?: number;
+  code?: string;
+  status?: "good" | "revoked" | "unknown";
+  message: string;
+}
+
+type DiagnosticCallback = (event: DiagnosticEvent) => void | Promise<void>;
+```
+
+For example, a `revocation_result` event may report `status: "unknown"` and
+`code: "OCSP_MISSING_NEXT_UPDATE"`, followed by a CRL attempt. These internal
+codes explain individual attempts; `verify()` still returns the public failure
+codes documented above. `revocation_error` reports a loading or validation
+exception without forwarding its raw error message. Cache events distinguish
+reuse, misses, discarded evidence, and storage failures.
+
+Events include the mechanism and certificate index but exclude certificate
+contents, evidence bytes, cache keys, and source URLs. Callbacks are invoked in
+check order; returned promises are not awaited. Synchronous exceptions and
+promise rejections from callbacks are ignored so diagnostics cannot change the
+validation result. Diagnostics describe evidence attempts and cache activity,
+not every validation outcome; a path failure or missing endpoints may produce
+no diagnostic events.
 
 ## Caching
 
