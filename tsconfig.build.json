@@ -6,7 +6,7 @@
     "declaration": true,
     "noEmit": false,
     "noEmitOnError": true,
-    "allowImportingTsExtensions": false
+    "rewriteRelativeImportExtensions": true
   },
   "include": ["src/**/*.ts"]
 }

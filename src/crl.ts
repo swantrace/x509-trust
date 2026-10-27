@@ -27,7 +27,7 @@ type CrlFailureCode =
   | "CRL_MISSING_NEXT_UPDATE"
   | "UNSUPPORTED_CRL";
 
-type CrlValidationResult =
+export type CrlValidationResult =
   | { status: "good" | "revoked"; thisUpdate: Date; nextUpdate: Date }
   | { status: "unknown"; code: CrlFailureCode; message: string };
 

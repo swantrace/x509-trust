@@ -25,7 +25,7 @@ type OcspFailureCode =
   | "OCSP_MISSING_NEXT_UPDATE"
   | "OCSP_STATUS_UNKNOWN";
 
-type OcspValidationResult =
+export type OcspValidationResult =
   | { status: "good" | "revoked"; thisUpdate: Date; nextUpdate: Date }
   | { status: "unknown"; code: OcspFailureCode; message: string };
 

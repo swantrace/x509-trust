@@ -26,6 +26,42 @@ Delegated responders are not supported yet. Although OCSP permits responses
 without `nextUpdate`, this verifier currently requires it to bound freshness.
 It does not fetch or cache responses.
 
+The internal `createRevocationChecker()` wraps both validators with caching.
+Its `checkCrl()` and `checkOcsp()` methods take `certificate`, `issuerCertificate`,
+`source`, and an async `load()` callback returning DER bytes. `source` identifies
+the URL or other origin of the data. Network fetching will be added separately.
+
+The default cache is an in-memory store limited to 256 entries. Verified DER data
+is cached until the earlier of `nextUpdate` or `maxCacheAgeMs` (one hour by
+default). Each cache hit is revalidated for the requested certificate, issuer,
+and date. Unknown results are not cached. CRLs can be shared across certificates
+from the same issuer; OCSP entries are specific to a certificate and issuer.
+
+`CacheStore` and `createMemoryCache()` are exported for custom storage. A store
+implements async `get(key)`, `set(key, value, ttlMs)`, and `delete(key)`. Values
+are strings and expiration is in milliseconds, so a connected Redis client can
+be adapted without adding Redis as a dependency of this package:
+
+```typescript
+const checker = createRevocationChecker({
+  cacheKeyPrefix: "sahara:x509-trust:revocation:v1",
+  cache: {
+    get: (key) => redisClient.get(key),
+    async set(key, value, ttlMs) {
+      await redisClient.set(key, value, { PX: ttlMs });
+    },
+    async delete(key) {
+      await redisClient.del(key);
+    }
+  }
+});
+```
+
+The checker is currently internal; the public certificate validator will accept
+the same storage interface. The application owns the Redis connection. Cache
+failures cause fresh loading and validation, while loader errors propagate;
+expired cached data is never used as a fallback.
+
 Requires Node.js 24 or later.
 
 ```sh
