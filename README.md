@@ -2,34 +2,76 @@
 
 A Node.js package for X.509 certificate chain and revocation validation using PKI.js.
 
-The internal `validateCertificatePath()` function validates certificate paths,
-signatures, and validity dates using PKI.js. The package entry point does not
-export a public validation API yet.
+Requires Node.js 24 or later. Create a validator once and reuse it across requests:
 
-The internal `getRevocationEndpoints()` function accepts a parsed PKI.js
-certificate and extracts CRL distribution point URIs and OCSP responder URIs.
-Missing extensions produce empty arrays; malformed extensions throw an error.
-The function preserves multiple addresses and does not fetch or validate URLs.
+```typescript
+import { createTrustValidator } from "@sahara/x509-trust";
 
-The internal `validateCrl()` function checks a DER-encoded, direct, complete CRL
-against a certificate and its issuer from a validated path. It verifies the CRL
-issuer, signing permission, signature, validity interval, and revocation records,
-returning `good`, `revoked`, or `unknown`. Missing `nextUpdate`, unsupported CRL
-scope or delta extensions, and unusable CRLs produce `unknown`. It does not fetch
-or cache CRLs.
+const validator = createTrustValidator({
+  trustAnchors: [rootCertificate],
+  loadCrl,
+  loadOcsp
+});
 
-The internal `validateOcsp()` function validates DER OCSP responses signed
-directly by the issuer from a validated certificate path. It matches the full
-certificate identifier, verifies the response signature, and checks `producedAt`,
-`thisUpdate`, and `nextUpdate`, returning `good`, `revoked`, or `unknown`.
-Delegated responders are not supported yet. Although OCSP permits responses
-without `nextUpdate`, this verifier currently requires it to bound freshness.
-It does not fetch or cache responses.
+const result = await validator.verify({
+  certificateChain: [clientCertificate, intermediateCertificate]
+});
 
-The internal `createRevocationChecker()` wraps both validators with caching.
-Its `checkCrl()` and `checkOcsp()` methods take `certificate`, `issuerCertificate`,
-`source`, and an async `load()` callback returning DER bytes. `source` identifies
-the URL or other origin of the data. Network fetching will be added separately.
+if (result.valid) {
+  console.log(result.trustAnchorFingerprint256);
+} else {
+  console.error(result.code, result.message);
+}
+```
+
+Each input certificate is a PEM string or DER byte array. `certificateChain`
+must be leaf-first; the root can be omitted. Configured trust anchors are copied
+when the validator is created. Including a root in a request does not establish
+trust. Consumers do not need to construct PKI.js objects.
+
+The validator builds and validates the certificate path, then checks revocation
+for the leaf and every intermediate. The configured trust anchor itself is not
+checked for revocation. OCSP addresses are tried first, followed by CRL addresses
+when OCSP is unavailable or inconclusive. A verified revoked status stops
+validation immediately; a fallback cannot override it.
+
+Network fetching is not built in yet. Supply application callbacks that return
+DER bytes from approved sources:
+
+```typescript
+type LoadCrl = (url: string) => Promise<Uint8Array>;
+
+type LoadOcsp = (request: {
+  url: string;
+  certificate: Uint8Array;
+  issuerCertificate: Uint8Array;
+}) => Promise<Uint8Array>;
+```
+
+These callback signatures describe application-provided implementations, not
+functions exported by this package. Loaders own network access controls,
+timeouts, and response size limits. At least one loader is needed to complete
+validation. Missing endpoints, missing loaders, loading failures, or unusable
+evidence result in `REVOCATION_STATUS_UNKNOWN` unless another source succeeds.
+
+Successful results contain `valid: true`, a leaf-first DER `certificatePath`
+including the selected anchor, and `trustAnchorFingerprint256`. Failures contain
+`valid: false`, `code`, and `message`. Revocation failures also include a
+zero-based `certificateIndex`, where `0` is the leaf.
+
+| Failure code | Meaning |
+| --- | --- |
+| `INVALID_CERTIFICATE` | A request certificate could not be parsed. |
+| `INVALID_CERTIFICATE_PATH` | No valid path to a configured anchor was found, including signature or date failures. |
+| `CERTIFICATE_REVOKED` | An authenticated source reports that a path certificate is revoked. |
+| `REVOCATION_STATUS_UNKNOWN` | Revocation status could not be established for a path certificate. |
+
+Invalid validator configuration and invalid `checkDate` values throw errors.
+Pass `checkDate` to `verify()` for historical or offline checks; normal requests
+use the current time. Currently supported evidence is direct, complete CRLs and
+OCSP responses signed directly by the issuer. Delegated responders, delta and
+scoped CRLs are not supported. Although OCSP permits omitting `nextUpdate`, this
+verifier currently requires it to bound freshness.
 
 The default cache is an in-memory store limited to 256 entries. Verified DER data
 is cached until the earlier of `nextUpdate` or `maxCacheAgeMs` (one hour by
@@ -43,7 +85,10 @@ are strings and expiration is in milliseconds, so a connected Redis client can
 be adapted without adding Redis as a dependency of this package:
 
 ```typescript
-const checker = createRevocationChecker({
+const validator = createTrustValidator({
+  trustAnchors: [rootCertificate],
+  loadCrl,
+  loadOcsp,
   cacheKeyPrefix: "sahara:x509-trust:revocation:v1",
   cache: {
     get: (key) => redisClient.get(key),
@@ -57,12 +102,10 @@ const checker = createRevocationChecker({
 });
 ```
 
-The checker is currently internal; the public certificate validator will accept
-the same storage interface. The application owns the Redis connection. Cache
-failures cause fresh loading and validation, while loader errors propagate;
-expired cached data is never used as a fallback.
-
-Requires Node.js 24 or later.
+The application owns the Redis connection. Cache failures cause fresh loading
+and validation; expired data is never used as a fallback. Configure
+`maxCacheAgeMs` and `cacheKeyPrefix` on `createTrustValidator()` as needed.
+Certificate paths are validated again for every request, including cache hits.
 
 ```sh
 npm ci

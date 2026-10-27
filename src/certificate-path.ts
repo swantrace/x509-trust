@@ -1,7 +1,7 @@
 import { X509Certificate } from "node:crypto";
 import { Certificate, CertificateChainValidationEngine } from "pkijs";
 
-type CertificateInput = string | Uint8Array;
+export type CertificateInput = string | Uint8Array;
 
 interface CertificatePathOptions {
   // Leaf first; the root certificate may be omitted.
