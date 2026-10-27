@@ -1,0 +1,39 @@
+{
+  "name": "@sahara/x509-trust",
+  "version": "0.1.0",
+  "description": "X.509 certificate chain and revocation validation for Node.js",
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "x509",
+    "pki",
+    "certificate",
+    "crl",
+    "ocsp"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "asn1js": "^4.0.0",
+    "pkijs": "^4.0.0"
+  }
+}
