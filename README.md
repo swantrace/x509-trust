@@ -1,11 +1,16 @@
-# @sahara/x509-trust
+# x509-trust
 
-A Node.js package for X.509 certificate chain and revocation validation using PKI.js.
+Validate X.509 certificate chains and certificate revocation status in Node.js.
+Requires Node.js 24 or later.
 
-Requires Node.js 24 or later. Create a validator once and reuse it across requests:
+## Quick start
+
+```sh
+npm install x509-trust
+```
 
 ```typescript
-import { createTrustValidator } from "@sahara/x509-trust";
+import { createTrustValidator } from "x509-trust";
 
 const validator = createTrustValidator({
   trustAnchors: [rootCertificate]
@@ -16,100 +21,313 @@ const result = await validator.verify({
 });
 
 if (result.valid) {
-  console.log(result.trustAnchorFingerprint256);
+  console.log("Certificate is trusted and revocation checks passed");
 } else {
   console.error(result.code, result.message);
 }
 ```
 
-Each input certificate is a PEM string or DER byte array. `certificateChain`
-must be leaf-first; the root can be omitted. Configured trust anchors are copied
-when the validator is created. Including a root in a request does not establish
-trust. Consumers do not need to construct PKI.js objects.
+Create a validator once and reuse it across requests. Certificates can be PEM
+strings or DER byte arrays. Supply the leaf certificate first, followed by its
+intermediates; the root can be omitted. Only configured `trustAnchors` establish
+trust: including a root in the supplied chain does not make it trusted.
 
-The validator builds and validates the certificate path, then checks revocation
-for the leaf and every intermediate. The configured trust anchor itself is not
-checked for revocation. OCSP addresses are tried first, followed by CRL addresses
-when OCSP is unavailable or inconclusive. A verified revoked status stops
-validation immediately; a fallback cannot override it.
+## API
 
-By default the validator downloads CRLs with HTTP GET and sends DER OCSP requests
-with HTTP POST to the certificate's advertised addresses. CRL downloads may be
-DER or PEM. OCSP requests identify the target certificate and issuer, are
-unsigned, and omit the optional nonce; response signatures and freshness are
-verified before use.
+These types describe the public API and can be imported from `x509-trust`.
+The package also exports `createTrustValidator()` and `createMemoryCache()`.
 
-Configure the built-in transport with `http`:
+```typescript
+type CertificateInput = string | Uint8Array;
+
+interface TrustValidatorOptions {
+  trustAnchors: readonly CertificateInput[];
+  loadCrl?: ((url: string) => Promise<Uint8Array>) | false;
+  loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
+  http?: HttpOptions;
+  cache?: CacheStore;
+  maxCacheAgeMs?: number;
+  cacheKeyPrefix?: string;
+  now?: () => number;
+  onDiagnostic?: DiagnosticCallback;
+}
+
+interface OcspLoadOptions {
+  url: string;
+  certificate: Uint8Array;
+  issuerCertificate: Uint8Array;
+}
+
+interface HttpOptions {
+  timeoutMs?: number;
+  maxResponseBytes?: number;
+  allowedOrigins?: readonly string[];
+  allowPrivateAddresses?: boolean;
+}
+
+interface CacheStore {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string, ttlMs: number): Promise<void>;
+  delete(key: string): Promise<void>;
+}
+
+interface VerifyOptions {
+  certificateChain: readonly CertificateInput[];
+  checkDate?: Date;
+}
+
+interface TrustValidator {
+  verify(options: VerifyOptions): Promise<ValidationResult>;
+}
+
+function createTrustValidator(options: TrustValidatorOptions): TrustValidator;
+
+function createMemoryCache(options?: {
+  maxEntries?: number;
+  now?: () => number;
+}): CacheStore;
+```
+
+| Option                             | Default                        | Purpose                                                                                |
+| ---------------------------------- | ------------------------------ | -------------------------------------------------------------------------------------- |
+| `trustAnchors`                   | Required                       | Nonempty set of explicitly trusted certificates, copied when the validator is created. |
+| `loadCrl`                        | Built-in HTTP loader           | Override CRL retrieval, or set `false` to disable CRL checks.                        |
+| `loadOcsp`                       | Built-in HTTP loader           | Override OCSP retrieval, or set `false` to disable OCSP checks.                      |
+| `http.timeoutMs`                 | `5000`                       | Deadline for each HTTP request, including reading its body.                            |
+| `http.maxResponseBytes`          | `5242880` (5 MiB)            | Maximum response body size per request.                                                |
+| `http.allowedOrigins`            | No origin allowlist            | Restrict retrieval to the listed origins; public-address restrictions still apply.     |
+| `http.allowPrivateAddresses`     | `false`                      | Allow private or loopback destinations for internal PKI or local use.                  |
+| `cache`                          | In-memory, 256 entries         | Storage for verified CRL and OCSP evidence.                                            |
+| `maxCacheAgeMs`                  | `3600000` (1 hour)           | Maximum evidence cache age, also bounded by `nextUpdate`.                            |
+| `cacheKeyPrefix`                 | `"x509-trust:revocation:v1"` | Namespace for cache entries.                                                           |
+| `now`                            | `Date.now`                   | Clock returning epoch milliseconds.                                                    |
+| `onDiagnostic` | No callback | Receive detailed revocation and cache diagnostics using your application's logger. |
+| `verify().certificateChain`      | Required                       | Leaf certificate followed by intermediates.                                            |
+| `verify().checkDate`             | Current time from `now`      | Date at which to validate the path and revocation evidence.                            |
+| `createMemoryCache().maxEntries` | `256`                        | Maximum entries; the oldest inserted entry is evicted when full.                       |
+| `createMemoryCache().now`        | `Date.now`                   | Clock used to expire entries in that memory store.                                     |
+
+### Results and failure codes
+
+```typescript
+type ValidationFailureCode =
+  | "INVALID_CERTIFICATE"
+  | "INVALID_CERTIFICATE_PATH"
+  | "CERTIFICATE_REVOKED"
+  | "REVOCATION_STATUS_UNKNOWN";
+
+type ValidationResult =
+  | {
+      valid: true;
+      certificatePath: Uint8Array[];
+      trustAnchorFingerprint256: string;
+    }
+  | {
+      valid: false;
+      code: ValidationFailureCode;
+      message: string;
+      certificateIndex?: number;
+    };
+```
+
+On success, `certificatePath` contains the validated path as DER bytes, leaf
+first and including the selected trust anchor. `trustAnchorFingerprint256` is
+that anchor's SHA-256 fingerprint. These fields let applications inspect the
+selected path or record which anchor established trust.
+
+| Failure code                  | Meaning                                                                               |
+| ----------------------------- | ------------------------------------------------------------------------------------- |
+| `INVALID_CERTIFICATE`       | A supplied certificate could not be parsed.                                           |
+| `INVALID_CERTIFICATE_PATH`  | No valid path to a configured anchor was found, including signature or date failures. |
+| `CERTIFICATE_REVOKED`       | Authenticated evidence reports that a path certificate is revoked.                    |
+| `REVOCATION_STATUS_UNKNOWN` | Revocation status could not be established for a path certificate.                    |
+
+Revocation failures include `certificateIndex`, the zero-based position in the
+validated path (`0` is the leaf). Use `code` for application decisions and
+`message` for diagnostic detail. Invalid validator configuration and invalid
+`checkDate` values throw errors.
+
+## Validation policy and supported PKI
+
+The validator first builds and validates a path to a configured trust anchor,
+then checks revocation for the leaf and every intermediate. The configured
+anchor itself is not checked for revocation; applications control trust in it
+by adding or removing it from `trustAnchors` when creating a validator.
+
+For each certificate, sources advertised in its OCSP AIA and CRL Distribution
+Points extensions are tried in this order:
+
+1. Try OCSP addresses first.
+2. If an attempt fails or cannot establish status, try the next source,
+   continuing with CRL addresses after OCSP addresses.
+3. The first authenticated, current `good` or `revoked` result ends the search
+   for that certificate. `revoked` fails validation immediately; `good` allows
+   validation to continue with the next certificate in the path.
+4. If no source establishes status, return `REVOCATION_STATUS_UNKNOWN`.
+
+OCSP-first is this library's policy, not a UDAP requirement. It queries status
+for the individual certificate before falling back to downloading a CRL.
+Sources are alternatives: the validator does not query all of them or reconcile
+conflicting results after obtaining a usable answer.
+
+This is a fail-closed policy: unavailable endpoints, missing endpoints, disabled
+mechanisms, invalid signatures, expired evidence, or unsupported evidence never
+count as proof that a certificate is not revoked. Another usable source may
+still establish status. Disabling both CRL and OCSP does not bypass revocation
+validation for non-anchor certificates.
+
+| Evidence                                                 | Current support                                                                                |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Complete CRLs signed directly by the certificate issuer  | Supported, without scope restrictions.                                                         |
+| OCSP responses signed directly by the certificate issuer | Supported.                                                                                     |
+| Delegated OCSP responders                                | Not supported; a separate authorized responder certificate cannot currently establish status.  |
+| Delta CRLs                                               | Not supported; changes cannot currently be combined with a base CRL.                           |
+| Scoped or indirect CRLs                                  | Not supported; restricted coverage or a separate CRL issuer cannot currently establish status. |
+| OCSP responses without `nextUpdate`                    | Not accepted; treated as unknown, allowing CRL fallback.                                       |
+
+OCSP permits omitting `nextUpdate`, but this verifier requires it to set an
+explicit freshness boundary. This is a library restriction, not an OCSP
+requirement. Both CRL and OCSP evidence must have a usable `nextUpdate`.
+
+Before using the library with a trust community or CA, confirm that its PKI
+publishes evidence within this supported scope. Rejecting unsupported evidence
+avoids accepting an unverified status, but can also reject otherwise valid
+certificates.
+
+The library validates certificate trust and revocation. Applications remain
+responsible for their protocol rules, such as matching a JWT issuer to a
+certificate SAN, verifying the JWT signature and claims, and deciding what the
+authenticated party may access. A successful certificate result alone does not
+establish UDAP compliance.
+
+## Retrieving revocation evidence
+
+By default, the validator downloads CRLs with HTTP GET and sends unsigned DER
+OCSP requests with HTTP POST. CRL downloads may be DER or PEM. OCSP requests omit
+the optional nonce; response signatures and freshness are verified before use.
+
+Because retrieval URLs come from supplied certificates, built-in retrieval
+restricts destinations to reduce SSRF exposure. Redirects and HTTP(S) URLs with
+embedded credentials or fragments are rejected. Only public IPv4 and
+global-unicast IPv6 destinations are permitted by default, with resolved
+addresses checked when establishing each connection.
+
+Use an origin allowlist when the CA endpoints are known:
 
 ```typescript
 const validator = createTrustValidator({
   trustAnchors: [rootCertificate],
   http: {
+    allowedOrigins: ["https://ca.example.org", "http://ocsp.example.org"],
     timeoutMs: 5000,
-    maxResponseBytes: 5 * 1024 * 1024,
-    allowedOrigins: ["https://ca.example.org", "http://ocsp.example.org"]
+    maxResponseBytes: 5 * 1024 * 1024
   }
 });
 ```
 
-The defaults are a five-second deadline for each request, including its body,
-and a five-MiB response limit. Redirects are rejected. HTTP(S) URLs with embedded
-credentials or fragments are rejected. Only public IPv4 and global-unicast IPv6
-destinations are permitted by default, with DNS addresses checked as part of
-establishing each connection. `allowedOrigins` can further restrict destinations.
-For local tests or private CA infrastructure, explicitly set
-`http.allowPrivateAddresses: true`, preferably with an origin allowlist.
+For internal PKI or local endpoints, set `http.allowPrivateAddresses: true`,
+preferably with an origin allowlist. HTTPS endpoints must also pass Node.js TLS
+verification.
 
-Custom `loadCrl` and `loadOcsp` callbacks remain optional overrides. Set either
-option to `false` to disable that mechanism; disabling both still fails
-revocation validation. Override callbacks return DER bytes and have these
-signatures:
+### Custom loaders and disabled mechanisms
+
+Supply `loadCrl` or `loadOcsp` to retrieve evidence through your own transport or
+from offline storage. Callbacks return DER bytes; OCSP callbacks receive the
+target certificate and its issuer as DER bytes. The library still validates
+the returned evidence.
 
 ```typescript
-type LoadCrl = (url: string) => Promise<Uint8Array>;
-
-type LoadOcsp = (request: {
-  url: string;
-  certificate: Uint8Array;
-  issuerCertificate: Uint8Array;
-}) => Promise<Uint8Array>;
+const validator = createTrustValidator({
+  trustAnchors: [rootCertificate],
+  loadCrl: async (url) => readCrlFromStorage(url),
+  loadOcsp: false
+});
 ```
 
-These callback signatures describe application-provided implementations, not
-functions exported by this package. The `http` settings apply only to built-in
-loaders; overrides own their network controls and limits. Missing endpoints,
-disabled loaders, loading failures, or unusable evidence result in
-`REVOCATION_STATUS_UNKNOWN` unless another source succeeds.
+Here, `readCrlFromStorage` is an application-provided function. This example
+permits CRL checks only. Setting a loader to `false` disables that mechanism for
+the entire validator, even when certificates advertise its URLs. Omitting a
+loader uses the built-in HTTP implementation.
 
-Successful results contain `valid: true`, a leaf-first DER `certificatePath`
-including the selected anchor, and `trustAnchorFingerprint256`. Failures contain
-`valid: false`, `code`, and `message`. Revocation failures also include a
-zero-based `certificateIndex`, where `0` is the leaf.
+The `http` settings apply only to built-in loaders. Custom loaders own their
+network restrictions, timeouts, and size limits. For historical validation,
+`checkDate` changes the validation date but does not retrieve historical evidence;
+provide suitable evidence through custom loaders.
 
-| Failure code | Meaning |
-| --- | --- |
-| `INVALID_CERTIFICATE` | A request certificate could not be parsed. |
-| `INVALID_CERTIFICATE_PATH` | No valid path to a configured anchor was found, including signature or date failures. |
-| `CERTIFICATE_REVOKED` | An authenticated source reports that a path certificate is revoked. |
-| `REVOCATION_STATUS_UNKNOWN` | Revocation status could not be established for a path certificate. |
+## Diagnostics
 
-Invalid validator configuration and invalid `checkDate` values throw errors.
-Pass `checkDate` to `verify()` for historical or offline checks; normal requests
-use the current time. Currently supported evidence is direct, complete CRLs and
-OCSP responses signed directly by the issuer. Delegated responders, delta and
-scoped CRLs are not supported. Although OCSP permits omitting `nextUpdate`, this
-verifier currently requires it to bound freshness.
+Pass `onDiagnostic` to send detailed revocation and cache events to your existing
+logger or monitoring system. The library does not log automatically or require
+a logging dependency.
 
-The default cache is an in-memory store limited to 256 entries. Verified DER data
-is cached until the earlier of `nextUpdate` or `maxCacheAgeMs` (one hour by
-default). Each cache hit is revalidated for the requested certificate, issuer,
-and date. Unknown results are not cached. CRLs can be shared across certificates
-from the same issuer; OCSP entries are specific to a certificate and issuer.
+```typescript
+const validator = createTrustValidator({
+  trustAnchors: [rootCertificate],
+  onDiagnostic(event) {
+    logger.debug(event);
+  }
+});
+```
 
-`CacheStore` and `createMemoryCache()` are exported for custom storage. A store
-implements async `get(key)`, `set(key, value, ttlMs)`, and `delete(key)`. Values
-are strings and expiration is in milliseconds, so a connected Redis client can
-be adapted without adding Redis as a dependency of this package:
+`logger` is supplied by the application. The exported diagnostic types are:
+
+```typescript
+interface DiagnosticEvent {
+  event:
+    | "cache_hit"
+    | "cache_miss"
+    | "cache_discarded"
+    | "cache_error"
+    | "revocation_result"
+    | "revocation_error";
+  mechanism: "crl" | "ocsp";
+  certificateIndex?: number;
+  code?: string;
+  status?: "good" | "revoked" | "unknown";
+  message: string;
+}
+
+type DiagnosticCallback = (event: DiagnosticEvent) => void | Promise<void>;
+```
+
+For example, a `revocation_result` event may report `status: "unknown"` and
+`code: "OCSP_MISSING_NEXT_UPDATE"`, followed by a CRL attempt. These internal
+codes explain individual attempts; `verify()` still returns the public failure
+codes documented above. `revocation_error` reports a loading or validation
+exception without forwarding its raw error message. Cache events distinguish
+reuse, misses, discarded evidence, and storage failures.
+
+Events include the mechanism and certificate index but exclude certificate
+contents, evidence bytes, cache keys, and source URLs. Callbacks are invoked in
+check order; returned promises are not awaited. Synchronous exceptions and
+promise rejections from callbacks are ignored so diagnostics cannot change the
+validation result. Diagnostics describe evidence attempts and cache activity,
+not every validation outcome; a path failure or missing endpoints may produce
+no diagnostic events.
+
+## Caching
+
+The default cache holds up to 256 entries in memory. Reusing the validator lets
+repeated requests avoid downloading the same evidence. CRLs can be shared across
+certificates with the same issuer and CRL URL; OCSP entries also identify the
+individual certificate.
+
+Only evidence that establishes `good` or `revoked` status is cached. Its expiry
+is the earlier of `nextUpdate` and the time it was cached plus `maxCacheAgeMs`
+(one hour by default). A cache hit does not extend that expiry. For example,
+evidence cached at 10:00 with `nextUpdate` at 12:00 expires at 11:00 under the
+default limit, even if used again at 10:30.
+
+Cached evidence is revalidated for the certificate, issuer, and validation date
+on each use. Certificate paths are also validated on every request. Unknown
+results are not cached. Cache failures trigger fresh retrieval and validation;
+expired evidence is never used as a fallback. Caching introduces a delay before
+newly published revocation information is observed, so choose `maxCacheAgeMs`
+according to your deployment's freshness requirements.
+
+To change the memory limit, pass `createMemoryCache({ maxEntries: 1024 })` as
+`cache`. For shared storage, adapt an existing client to `CacheStore`. For example,
+with a connected Node Redis client:
 
 ```typescript
 const validator = createTrustValidator({
@@ -127,39 +345,5 @@ const validator = createTrustValidator({
 });
 ```
 
-The application owns the Redis connection. Cache failures cause fresh loading
-and validation; expired data is never used as a fallback. Configure
-`maxCacheAgeMs` and `cacheKeyPrefix` on `createTrustValidator()` as needed.
-Certificate paths are validated again for every request, including cache hits.
-
-```sh
-npm ci
-npm run typecheck
-npm run build
-npm test
-```
-
-Source files live in `src/`. The build produces JavaScript and TypeScript declaration files in `dist/`.
-
-Install the recommended Biome extension in VS Code to format code and organize
-imports on save. Run `npm run format` to apply both actions from the terminal,
-or `npm run format:check` to check them without changing files. Formatting uses
-two spaces, double quotes, semicolons, and no trailing commas.
-
-`npm ci` also installs the Husky pre-commit hook. Before each commit,
-lint-staged formats staged JavaScript, TypeScript, and JSON files and organizes
-their imports, then adds the changes to the commit.
-
-GitHub Actions checks formatting, types, tests, builds, and package contents on
-pull requests targeting `main` and pushes to `main`.
-
-Tests use committed certificates and a fixed validation time derived from the
-fixtures, so running tests does not require certificate generation. To regenerate
-the fixtures with OpenSSL, run `bash test/fixtures/generate.sh`. Private keys are
-temporary and are deleted when the script exits.
-
-HTTP tests start temporary Node.js servers on random loopback ports and close
-them automatically. They exercise downloads, OCSP requests, fallback, caching,
-deadlines, size limits, and destination restrictions without external services.
-
-Revocation fixtures are documented in [test/fixtures/README.md](test/fixtures/README.md).
+The application owns the Redis connection. Cache values are strings and TTLs
+are expressed in milliseconds.

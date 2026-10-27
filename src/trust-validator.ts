@@ -6,6 +6,7 @@ import {
   validateCertificatePath
 } from "./certificate-path.ts";
 import type { CrlValidationResult } from "./crl.ts";
+import type { DiagnosticCallback } from "./diagnostics.ts";
 import {
   createHttpLoaders,
   type HttpOptions,
@@ -24,6 +25,7 @@ export interface TrustValidatorOptions {
   maxCacheAgeMs?: number;
   cacheKeyPrefix?: string;
   now?: () => number;
+  onDiagnostic?: DiagnosticCallback;
 }
 
 export interface VerifyOptions {
@@ -66,7 +68,8 @@ export function createTrustValidator({
   cache,
   maxCacheAgeMs,
   cacheKeyPrefix,
-  now = Date.now
+  now = Date.now,
+  onDiagnostic
 }: TrustValidatorOptions): TrustValidator {
   if (trustAnchors.length === 0) {
     throw new TypeError("trustAnchors must contain at least one certificate");
@@ -79,12 +82,14 @@ export function createTrustValidator({
     cache,
     maxCacheAgeMs,
     cacheKeyPrefix,
-    now
+    now,
+    onDiagnostic
   });
 
   async function checkCertificateRevocation(
     certificate: Certificate,
     issuerCertificate: Certificate,
+    certificateIndex: number,
     checkDate?: Date
   ): Promise<CertificateRevocation> {
     let endpoints: ReturnType<typeof getRevocationEndpoints>;
@@ -107,6 +112,7 @@ export function createTrustValidator({
             certificate,
             issuerCertificate,
             source: url,
+            certificateIndex,
             checkDate,
             load: () =>
               ocspLoader({
@@ -129,6 +135,7 @@ export function createTrustValidator({
             certificate,
             issuerCertificate,
             source: url,
+            certificateIndex,
             checkDate,
             load: () => crlLoader(url)
           })
@@ -171,6 +178,7 @@ export function createTrustValidator({
         const revocation = await checkCertificateRevocation(
           certificates[index],
           certificates[index + 1],
+          index,
           checkDate
         );
         if (revocation.status === "revoked") {

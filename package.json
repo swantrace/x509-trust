@@ -1,9 +1,17 @@
 {
-  "name": "@sahara/x509-trust",
+  "name": "x509-trust",
   "version": "0.1.0",
   "description": "X.509 certificate chain and revocation validation for Node.js",
   "type": "module",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/swantrace/x509-trust.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "engines": {
     "node": ">=24"
   },
@@ -29,7 +37,7 @@
     "format": "biome check --write .",
     "format:check": "biome check .",
     "test": "node --test test/*.test.ts",
-    "prepare": "husky",
+    "prepare": "husky && npm run build",
     "prepack": "npm run build"
   },
   "lint-staged": {
