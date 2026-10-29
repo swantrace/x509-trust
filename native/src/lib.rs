@@ -6,6 +6,8 @@ use x509_parser::oid_registry::{
 };
 use x509_parser::prelude::*;
 
+mod certificate_path;
+
 /// Minimal native entry point used to verify the mixed Rust/TypeScript setup.
 #[napi]
 pub fn native_ready() -> bool {

@@ -112,3 +112,60 @@ test("rejects an empty certificate chain", async () => {
 
   assert.equal(result.pathValid, false);
 });
+
+test("selects the configured anchor and ignores unrelated supplied certificates", async () => {
+  const result = await validateCertificatePath({
+    certificateChain: [leaf, untrustedRoot, root, intermediate],
+    trustAnchors: [untrustedRoot, root],
+    checkDate
+  });
+  assert.ok(result.pathValid);
+  assert.deepEqual(
+    result.certificatePath.map(
+      (der) => new X509Certificate(der).fingerprint256
+    ),
+    [leaf, intermediate, root].map(
+      (pem) => new X509Certificate(pem).fingerprint256
+    )
+  );
+  assert.equal(
+    result.trustAnchorFingerprint256,
+    new X509Certificate(root).fingerprint256
+  );
+});
+
+test("rejects a CA certificate used as the leaf", async () => {
+  const result = await validateCertificatePath({
+    certificateChain: [root],
+    trustAnchors: [root],
+    checkDate
+  });
+  assert.ok(!result.pathValid);
+  assert.equal(result.code, "INVALID_CERTIFICATE_PATH");
+});
+
+test("rejects invalid configuration before path validation", async () => {
+  await assert.rejects(
+    validateCertificatePath({
+      certificateChain: [leaf],
+      trustAnchors: [],
+      checkDate
+    }),
+    TypeError
+  );
+  await assert.rejects(
+    validateCertificatePath({
+      certificateChain: [leaf],
+      trustAnchors: [root],
+      checkDate: new Date(Number.NaN)
+    }),
+    TypeError
+  );
+  await assert.rejects(
+    validateCertificatePath({
+      certificateChain: [leaf],
+      trustAnchors: ["not a certificate"],
+      checkDate
+    })
+  );
+});

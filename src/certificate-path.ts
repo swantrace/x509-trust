@@ -1,7 +1,8 @@
 import { X509Certificate } from "node:crypto";
-import { Certificate, CertificateChainValidationEngine } from "pkijs";
+import { type CertificateInput, certificateDer } from "./certificate-input.ts";
+import { nativeValidateCertificatePath } from "./native.ts";
 
-export type CertificateInput = string | Uint8Array;
+export type { CertificateInput } from "./certificate-input.ts";
 
 interface CertificatePathOptions {
   // Leaf first; the root certificate may be omitted.
@@ -22,10 +23,6 @@ type CertificatePathResult =
       message: string;
     };
 
-function parseCertificate(input: CertificateInput): Certificate {
-  return Certificate.fromBER(new X509Certificate(input).raw);
-}
-
 export async function validateCertificatePath({
   certificateChain,
   trustAnchors,
@@ -37,7 +34,9 @@ export async function validateCertificatePath({
   if (trustAnchors.length === 0) {
     throw new TypeError("trustAnchors must contain at least one certificate");
   }
-  const trustedCerts = trustAnchors.map(parseCertificate);
+  const trustedCerts = trustAnchors.map(
+    (input) => new X509Certificate(input).raw
+  );
 
   if (certificateChain.length === 0) {
     return {
@@ -47,9 +46,9 @@ export async function validateCertificatePath({
     };
   }
 
-  let certificates: Certificate[];
+  let certificates: Uint8Array[];
   try {
-    certificates = certificateChain.map(parseCertificate);
+    certificates = certificateChain.map(certificateDer);
   } catch {
     return {
       pathValid: false,
@@ -58,33 +57,32 @@ export async function validateCertificatePath({
     };
   }
 
-  const engine = new CertificateChainValidationEngine({
-    // PKI.js selects the last certificate as the leaf.
-    certs: certificates.reverse(),
-    trustedCerts,
-    checkDate
-  });
-
-  // Path validation only; revocation is handled separately.
-  const result = await engine.verify();
-  if (!result.result) {
+  try {
+    // Path validation only; revocation is handled separately.
+    const result = await nativeValidateCertificatePath(
+      certificates,
+      trustedCerts,
+      checkDate.getTime()
+    );
+    const trustAnchor = new X509Certificate(
+      trustedCerts[result.trustAnchorIndex]
+    );
+    return {
+      pathValid: true,
+      certificatePath: result.certificatePath,
+      trustAnchorFingerprint256: trustAnchor.fingerprint256
+    };
+  } catch (error) {
     return {
       pathValid: false,
-      code: "INVALID_CERTIFICATE_PATH",
-      message: result.resultMessage
+      code:
+        error instanceof Error && "code" in error && error.code === "InvalidArg"
+          ? "INVALID_CERTIFICATE"
+          : "INVALID_CERTIFICATE_PATH",
+      message:
+        error instanceof Error
+          ? error.message
+          : "Unable to validate certificate path"
     };
   }
-
-  const certificatePath = engine.certs.map(
-    (certificate) => new Uint8Array(certificate.toSchema().toBER(false))
-  );
-  const trustAnchor = new X509Certificate(
-    certificatePath[certificatePath.length - 1]
-  );
-
-  return {
-    pathValid: true,
-    certificatePath,
-    trustAnchorFingerprint256: trustAnchor.fingerprint256
-  };
 }

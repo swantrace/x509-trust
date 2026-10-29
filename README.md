@@ -4,7 +4,9 @@ Validate X.509 certificate chains and certificate revocation status in Node.js.
 Requires Node.js 24 or later.
 
 This exploration branch uses a Rust addon for URI SAN and revocation endpoint
-extraction. Path, CRL, and OCSP validation still use PKI.js.
+extraction (`x509-parser`) and certificate path validation (`rustls-webpki`, with
+the `ring` backend). CRL and OCSP validation still use PKI.js. Path validation
+runs on the Node.js worker pool; certificate inputs are copied before dispatch.
 
 Building from source requires stable Rust (Cargo and a platform linker) in
 addition to Node.js. Run `npm ci` to install dependencies and build both the
@@ -174,6 +176,27 @@ The validator first builds and validates a path to a configured trust anchor,
 then checks revocation for the leaf and every intermediate. The configured
 anchor itself is not checked for revocation; applications control trust in it
 by adding or removing it from `trustAnchors` when creating a validator.
+
+Path validation uses only the configured anchors, not system or browser root
+stores. It checks certificate validity at millisecond precision, including the
+selected anchor, and requires each issuer and anchor to be a CA with
+`keyCertSign` when Key Usage is present. The returned path includes the original
+DER of that configured anchor. No hostname check or TLS-specific EKU requirement
+is imposed; applications must enforce their intended certificate purpose.
+
+This backend supports X.509 v3 end-entity and intermediate certificates and the
+signature algorithms enabled by `rustls-webpki`'s `ring` backend: RSA PKCS#1 v1.5
+and RSA-PSS with supported RSA keys and SHA-256/384/512, ECDSA P-256/P-384 with
+supported SHA-256/384 combinations, and Ed25519. Unsupported algorithms, such as
+P-521 or SHA-1 certificate signatures, fail path validation. Root certificates
+are explicitly trusted inputs; their self-signatures do not establish trust.
+
+Full certificate-policy-tree processing is not implemented. Paths containing
+`policyMappings`, `policyConstraints`, or `inhibitAnyPolicy` are rejected even
+when those extensions are noncritical. Unsupported critical extensions,
+unsupported name constraints, and dates before the Unix epoch also fail path
+validation. This is a restricted validation profile, not a full RFC 5280 policy
+engine or a promise of identical acceptance behavior to PKI.js.
 
 For each certificate, sources advertised in its OCSP AIA and CRL Distribution
 Points extensions are tried in this order:

@@ -12,7 +12,18 @@ export declare function getUriSubjectAlternativeNames(
 /** Minimal native entry point used to verify the mixed Rust/TypeScript setup. */
 export declare function nativeReady(): boolean;
 
+export interface NativeValidatedPath {
+  certificatePath: Array<Uint8Array>;
+  trustAnchorIndex: number;
+}
+
 export interface RevocationEndpoints {
   crlUrls: Array<string>;
   ocspUrls: Array<string>;
 }
+
+export declare function validateCertificatePath(
+  chain: Array<Uint8Array>,
+  anchors: Array<Uint8Array>,
+  checkDateMs: number
+): Promise<NativeValidatedPath>;

@@ -38,6 +38,8 @@ test("extracts URI SANs from PEM, DER and typed-array views", () => {
   ]);
   for (const input of [
     leafPem,
+    Buffer.from(leafPem),
+    Uint8Array.from(Buffer.from(leafPem)),
     leafDer,
     Uint8Array.from(leafDer),
     padded.subarray(1, padded.length - 1)
