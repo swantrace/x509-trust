@@ -36,6 +36,9 @@
     "typecheck": "tsc --noEmit",
     "format": "biome check --write .",
     "format:check": "biome check .",
+    "build:native": "napi build --manifest-path native/Cargo.toml --output-dir native",
+    "build:native:release": "napi build --manifest-path native/Cargo.toml --output-dir native --release",
+    "test:native": "npm run build:native && node scripts/test-native.mjs",
     "test": "node --test test/*.test.ts",
     "prepare": "husky && npm run build",
     "prepack": "npm run build"
@@ -45,6 +48,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.3",
+    "@napi-rs/cli": "^3.5.0",
     "@types/node": "^24.19.2",
     "husky": "^9.1.7",
     "lint-staged": "^17.6.0",
