@@ -19,6 +19,10 @@ export type DiagnosticCallback = (
   event: DiagnosticEvent
 ) => void | Promise<void>;
 
+export type RevocationReport = (
+  event: Pick<DiagnosticEvent, "event" | "message" | "code" | "status">
+) => void;
+
 export function createDiagnosticReporter(onDiagnostic?: DiagnosticCallback) {
   return (event: DiagnosticEvent): void => {
     if (!onDiagnostic) return;

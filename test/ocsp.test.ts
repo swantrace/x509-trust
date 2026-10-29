@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { Enumerated, OctetString } from "asn1js";
 import { BasicOCSPResponse, Certificate, Extension, OCSPResponse } from "pkijs";
-import { validateOcsp } from "../src/ocsp.ts";
+import { validateOcsp } from "../src/revocation-validation.ts";
 
 function readCertificate(name: string): Uint8Array {
   const pem = readFileSync(new URL(`./fixtures/${name}.pem`, import.meta.url));

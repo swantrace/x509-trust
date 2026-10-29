@@ -14,8 +14,8 @@ import {
   id_IssuingDistributionPoint,
   id_KeyUsage
 } from "pkijs";
-import { validateCrl } from "../src/crl.ts";
 import { nativeValidateCrl } from "../src/native.ts";
+import { validateCrl } from "../src/revocation-validation.ts";
 
 function readFixture(name: string): string {
   return readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");

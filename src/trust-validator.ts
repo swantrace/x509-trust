@@ -1,66 +1,17 @@
-import type { RevocationStatus } from "../native/index.js";
-import type { CacheStore } from "./cache.ts";
-import { certificateDer } from "./certificate-input.ts";
-import { getUriSubjectAlternativeNames } from "./certificate-names.ts";
+import { createCertificateRevocationChecker } from "./certificate-revocation.ts";
 import {
-  type CertificateInput,
+  certificateDer,
+  getUriSubjectAlternativeNames,
   validateCertificatePath
-} from "./certificate-path.ts";
-import type { CrlValidationResult } from "./crl.ts";
-import type { DiagnosticCallback } from "./diagnostics.ts";
-import {
-  createHttpLoaders,
-  type HttpOptions,
-  type OcspLoadOptions
-} from "./http-loaders.ts";
-import type { OcspValidationResult } from "./ocsp.ts";
+} from "./certificates.ts";
+import { createHttpLoaders } from "./http-loaders.ts";
 import { createRevocationChecker } from "./revocation-checker.ts";
-import { getRevocationEndpoints } from "./revocation-endpoints.ts";
-
-export interface TrustValidatorOptions {
-  trustAnchors: readonly CertificateInput[];
-  loadCrl?: ((url: string) => Promise<Uint8Array>) | false;
-  loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
-  http?: HttpOptions;
-  cache?: CacheStore;
-  maxCacheAgeMs?: number;
-  cacheKeyPrefix?: string;
-  now?: () => number;
-  onDiagnostic?: DiagnosticCallback;
-}
-
-export interface VerifyOptions {
-  certificateChain: readonly CertificateInput[];
-  checkDate?: Date;
-}
-
-export type ValidationFailureCode =
-  | "INVALID_CERTIFICATE"
-  | "INVALID_CERTIFICATE_PATH"
-  | "CERTIFICATE_REVOKED"
-  | "REVOCATION_STATUS_UNKNOWN";
-
-export type ValidationResult =
-  | {
-      valid: true;
-      certificatePath: Uint8Array[];
-      trustAnchorFingerprint256: string;
-      leafUriSubjectAlternativeNames: string[];
-    }
-  | {
-      valid: false;
-      code: ValidationFailureCode;
-      message: string;
-      certificateIndex?: number;
-    };
-
-export interface TrustValidator {
-  verify(options: VerifyOptions): Promise<ValidationResult>;
-}
-
-type CertificateRevocation =
-  | { status: Exclude<`${RevocationStatus}`, "unknown"> }
-  | { status: "unknown"; message: string };
+import type {
+  TrustValidator,
+  TrustValidatorOptions,
+  ValidationResult,
+  VerifyOptions
+} from "./validation-types.ts";
 
 export function createTrustValidator({
   trustAnchors,
@@ -88,72 +39,11 @@ export function createTrustValidator({
     onDiagnostic
   });
 
-  async function checkCertificateRevocation(
-    certificateDer: Uint8Array,
-    issuerDer: Uint8Array,
-    certificateIndex: number,
-    checkDate?: Date
-  ): Promise<CertificateRevocation> {
-    let endpoints: ReturnType<typeof getRevocationEndpoints>;
-    try {
-      endpoints = getRevocationEndpoints(certificateDer);
-    } catch {
-      return {
-        status: "unknown",
-        message: "Unable to parse certificate revocation endpoints"
-      };
-    }
-
-    const attempts: Array<
-      () => Promise<CrlValidationResult | OcspValidationResult>
-    > = [];
-    if (ocspLoader) {
-      for (const url of endpoints.ocspUrls) {
-        attempts.push(() =>
-          checker.checkOcsp({
-            certificate: certificateDer,
-            issuerCertificate: issuerDer,
-            source: url,
-            certificateIndex,
-            checkDate,
-            load: () =>
-              ocspLoader({
-                url,
-                certificate: Uint8Array.from(certificateDer),
-                issuerCertificate: Uint8Array.from(issuerDer)
-              })
-          })
-        );
-      }
-    }
-    if (crlLoader) {
-      for (const url of endpoints.crlUrls) {
-        attempts.push(() =>
-          checker.checkCrl({
-            certificate: certificateDer,
-            issuerCertificate: issuerDer,
-            source: url,
-            certificateIndex,
-            checkDate,
-            load: () => crlLoader(url)
-          })
-        );
-      }
-    }
-
-    let message =
-      "No usable CRL or OCSP source is configured for this certificate";
-    for (const attempt of attempts) {
-      try {
-        const result = await attempt();
-        if (result.status !== "unknown") return result;
-        message = result.message;
-      } catch {
-        message = "Unable to load or validate certificate revocation data";
-      }
-    }
-    return { status: "unknown", message };
-  }
+  const checkCertificateRevocation = createCertificateRevocationChecker({
+    loadCrl: crlLoader,
+    loadOcsp: ocspLoader,
+    checker
+  });
 
   return {
     async verify({

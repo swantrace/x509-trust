@@ -1,7 +1,22 @@
-import { type CertificateInput, certificateDer } from "./certificate-input.ts";
-import { nativeValidateCertificatePath } from "./native.ts";
+import {
+  nativeCertificateDer,
+  nativeUriSubjectAlternativeNames,
+  nativeValidateCertificatePath
+} from "./native.ts";
 
-export type { CertificateInput } from "./certificate-input.ts";
+export type CertificateInput = string | Uint8Array;
+
+export function certificateDer(input: CertificateInput): Uint8Array {
+  return nativeCertificateDer(
+    typeof input === "string" ? Buffer.from(input) : input
+  );
+}
+
+export function getUriSubjectAlternativeNames(
+  certificate: CertificateInput
+): string[] {
+  return nativeUriSubjectAlternativeNames(certificateDer(certificate));
+}
 
 interface CertificatePathOptions {
   // Leaf first; the root certificate may be omitted.

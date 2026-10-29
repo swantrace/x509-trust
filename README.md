@@ -19,6 +19,9 @@ trailing DER bytes. TypeScript reuses the generated native declarations for
 revocation statuses, error codes and native function signatures; its API types
 still describe JavaScript dates, callbacks and validation orchestration.
 
+See [verification flow](docs/verification-flow.md) for the TypeScript module
+layout and the Rust entry and exit points used by `verify`.
+
 Building from source requires stable Rust (Cargo and a platform linker) in
 addition to Node.js. Run `npm ci` to install dependencies and build both the
 native addon and TypeScript. Use `npm test` for the test suite and `npm run build`

@@ -1,13 +1,21 @@
 import { createHash } from "node:crypto";
 import type { RevocationStatus } from "../native/index.js";
-import { type CacheStore, createMemoryCache } from "./cache.ts";
-import { type CrlValidationResult, validateCrl } from "./crl.ts";
+import {
+  type CacheStore,
+  createMemoryCache,
+  createRevocationCache
+} from "./cache.ts";
 import {
   createDiagnosticReporter,
   type DiagnosticCallback,
-  type DiagnosticEvent
+  type RevocationReport
 } from "./diagnostics.ts";
-import { type OcspValidationResult, validateOcsp } from "./ocsp.ts";
+import {
+  type CrlValidationResult,
+  type OcspValidationResult,
+  validateCrl,
+  validateOcsp
+} from "./revocation-validation.ts";
 
 const DEFAULT_MAX_CACHE_AGE_MS = 60 * 60 * 1000;
 
@@ -49,10 +57,7 @@ export function createRevocationChecker({
     throw new TypeError("maxCacheAgeMs must be positive and finite");
   }
   const report = createDiagnosticReporter(onDiagnostic);
-
-  type Report = (
-    event: Pick<DiagnosticEvent, "event" | "message" | "code" | "status">
-  ) => void;
+  const evidenceCache = createRevocationCache({ cache, now, maxCacheAgeMs });
 
   function cacheKey(
     kind: "crl" | "ocsp",
@@ -70,60 +75,13 @@ export function createRevocationChecker({
     return `${cacheKeyPrefix}:${kind}:${digest}`;
   }
 
-  async function discard(key: string, notify: Report): Promise<void> {
-    try {
-      await cache.delete(key);
-    } catch {
-      notify({
-        event: "cache_error",
-        message: "Unable to delete cached evidence"
-      });
-    }
-  }
-
-  async function read(key: string, notify: Report): Promise<Uint8Array | null> {
-    try {
-      const stored = await cache.get(key);
-      if (stored === null) return null;
-      const entry: unknown = JSON.parse(stored);
-      if (
-        entry !== null &&
-        typeof entry === "object" &&
-        "der" in entry &&
-        typeof entry.der === "string" &&
-        "expiresAt" in entry &&
-        typeof entry.expiresAt === "number" &&
-        Number.isFinite(entry.expiresAt) &&
-        entry.expiresAt > now() &&
-        "cachedAt" in entry &&
-        typeof entry.cachedAt === "number" &&
-        Number.isFinite(entry.cachedAt) &&
-        entry.cachedAt <= now() &&
-        entry.cachedAt + maxCacheAgeMs > now()
-      ) {
-        return Buffer.from(entry.der, "base64");
-      }
-    } catch {
-      notify({
-        event: "cache_error",
-        message: "Unable to read or parse cached evidence"
-      });
-    }
-    notify({
-      event: "cache_discarded",
-      message: "Cached evidence is expired or unusable"
-    });
-    await discard(key, notify);
-    return null;
-  }
-
   async function check<T extends RevocationResult>(
     key: string,
     load: () => Promise<Uint8Array>,
     validate: (data: Uint8Array) => Promise<T>,
-    notify: Report
+    notify: RevocationReport
   ): Promise<T> {
-    const cached = await read(key, notify);
+    const cached = await evidenceCache.read(key, notify);
     if (cached !== null) {
       notify({ event: "cache_hit", message: "Revalidating cached evidence" });
       const result = await validate(cached);
@@ -145,7 +103,7 @@ export function createRevocationChecker({
         event: "cache_discarded",
         message: "Cached evidence did not establish revocation status"
       });
-      await discard(key, notify);
+      await evidenceCache.discard(key, notify);
     } else {
       notify({ event: "cache_miss", message: "No usable cached evidence" });
     }
@@ -170,30 +128,7 @@ export function createRevocationChecker({
         : { message: "Loaded evidence established revocation status" })
     });
     if (result.status !== "unknown") {
-      const cachedAt = now();
-      const expiresAt = Math.min(
-        result.nextUpdate.getTime(),
-        cachedAt + maxCacheAgeMs
-      );
-      const ttlMs = Math.floor(expiresAt - now());
-      if (ttlMs > 0) {
-        try {
-          await cache.set(
-            key,
-            JSON.stringify({
-              der: Buffer.from(data).toString("base64"),
-              expiresAt,
-              cachedAt
-            }),
-            ttlMs
-          );
-        } catch {
-          notify({
-            event: "cache_error",
-            message: "Unable to cache validated evidence"
-          });
-        }
-      }
+      await evidenceCache.write(key, data, result.nextUpdate, notify);
     }
     return result;
   }

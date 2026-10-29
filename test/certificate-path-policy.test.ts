@@ -13,7 +13,7 @@ import {
   GeneralSubtree,
   NameConstraints
 } from "pkijs";
-import { validateCertificatePath } from "../src/certificate-path.ts";
+import { validateCertificatePath } from "../src/certificates.ts";
 import { nativeValidateCertificatePath } from "../src/native.ts";
 
 const checkDate = new Date("2030-06-01T00:00:00Z");

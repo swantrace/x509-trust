@@ -17,7 +17,7 @@ import {
   id_CRLDistributionPoints,
   RelativeDistinguishedNames
 } from "pkijs";
-import { getRevocationEndpoints } from "../src/revocation-endpoints.ts";
+import { nativeRevocationEndpoints } from "../src/native.ts";
 
 function certificateWithExtensions({
   extensions
@@ -55,7 +55,7 @@ for (const [name, issuer] of [
     );
     const certificate = Certificate.fromBER(new X509Certificate(pem).raw);
 
-    assert.deepEqual(getRevocationEndpoints(der(certificate)), {
+    assert.deepEqual(nativeRevocationEndpoints(der(certificate)), {
       crlUrls: [`http://crl.example.test/${issuer}.crl`],
       ocspUrls: [`http://ocsp.example.test/${issuer}`]
     });
@@ -66,7 +66,7 @@ test("returns empty arrays when a root has no revocation extensions", () => {
   const pem = readFileSync(new URL("./fixtures/root.pem", import.meta.url));
   const certificate = Certificate.fromBER(new X509Certificate(pem).raw);
 
-  assert.deepEqual(getRevocationEndpoints(der(certificate)), {
+  assert.deepEqual(nativeRevocationEndpoints(der(certificate)), {
     crlUrls: [],
     ocspUrls: []
   });
@@ -75,7 +75,7 @@ test("returns empty arrays when a root has no revocation extensions", () => {
 test("returns empty arrays when a certificate has no extensions", () => {
   const certificate = certificateWithExtensions({ extensions: [] });
   delete certificate.extensions;
-  assert.deepEqual(getRevocationEndpoints(der(certificate)), {
+  assert.deepEqual(nativeRevocationEndpoints(der(certificate)), {
     crlUrls: [],
     ocspUrls: []
   });
@@ -153,7 +153,7 @@ test("keeps multiple addresses in order and excludes issuer locations and non-UR
     ]
   });
 
-  assert.deepEqual(getRevocationEndpoints(der(certificate)), {
+  assert.deepEqual(nativeRevocationEndpoints(der(certificate)), {
     crlUrls: [
       "http://primary.test/ca.crl",
       "http://backup.test/ca.crl",
@@ -174,7 +174,7 @@ for (const extnID of [id_CRLDistributionPoints, id_AuthorityInfoAccess]) {
       ]
     });
 
-    assert.throws(() => getRevocationEndpoints(der(certificate)), TypeError);
+    assert.throws(() => nativeRevocationEndpoints(der(certificate)), TypeError);
   });
 
   test(`rejects duplicate ${extnID} extensions`, () => {
@@ -184,7 +184,7 @@ for (const extnID of [id_CRLDistributionPoints, id_AuthorityInfoAccess]) {
       (entry) => entry.extnID === extnID
     )!;
     certificate.extensions!.push(extension);
-    assert.throws(() => getRevocationEndpoints(der(certificate)), TypeError);
+    assert.throws(() => nativeRevocationEndpoints(der(certificate)), TypeError);
   });
 }
 
@@ -197,6 +197,6 @@ test("rejects malformed, truncated and trailing DER bytes", () => {
     certificate.subarray(0, certificate.length - 1),
     Buffer.concat([certificate, Buffer.from([0x00])])
   ]) {
-    assert.throws(() => getRevocationEndpoints(input), TypeError);
+    assert.throws(() => nativeRevocationEndpoints(input), TypeError);
   }
 });

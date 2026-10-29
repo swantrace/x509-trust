@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { certificateDer } from "../src/certificate-input.ts";
+import { certificateDer } from "../src/certificates.ts";
 import { createTrustValidator } from "../src/index.ts";
 
 const pem = readFileSync(

@@ -14,7 +14,7 @@ import {
   RSASSAPSSParams
 } from "pkijs";
 import { nativeCreateOcspRequest } from "../src/native.ts";
-import { validateOcsp } from "../src/ocsp.ts";
+import { validateOcsp } from "../src/revocation-validation.ts";
 
 function readCertificate(name: string) {
   return new X509Certificate(
