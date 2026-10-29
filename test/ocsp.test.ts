@@ -6,9 +6,9 @@ import { Enumerated, OctetString } from "asn1js";
 import { BasicOCSPResponse, Certificate, Extension, OCSPResponse } from "pkijs";
 import { validateOcsp } from "../src/ocsp.ts";
 
-function readCertificate(name: string): Certificate {
+function readCertificate(name: string): Uint8Array {
   const pem = readFileSync(new URL(`./fixtures/${name}.pem`, import.meta.url));
-  return Certificate.fromBER(new X509Certificate(pem).raw);
+  return new X509Certificate(pem).raw;
 }
 
 function readResponse(name: string) {
@@ -70,7 +70,11 @@ test("checks the intermediate using a response signed by its root issuer", async
 });
 
 test("matches issuer hashes as well as serial number", async () => {
-  assert.ok(certificate.serialNumber.isEqual(issuerCertificate.serialNumber));
+  assert.ok(
+    Certificate.fromBER(Uint8Array.from(certificate)).serialNumber.isEqual(
+      Certificate.fromBER(Uint8Array.from(issuerCertificate)).serialNumber
+    )
+  );
   const result = await validateOcsp({
     certificate,
     issuerCertificate,
@@ -153,8 +157,12 @@ test("can authenticate a direct-issuer response without embedded certificates", 
 });
 
 test("does not trust an embedded certificate with the issuer's name and a different key", async () => {
-  const impostor = readCertificate("untrusted-root");
-  impostor.subject = issuerCertificate.subject;
+  const impostor = Certificate.fromBER(
+    Uint8Array.from(readCertificate("untrusted-root"))
+  );
+  impostor.subject = Certificate.fromBER(
+    Uint8Array.from(issuerCertificate)
+  ).subject;
   const response = modifiedResponse((basic) => {
     basic.certs = [impostor];
   });

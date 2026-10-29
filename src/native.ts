@@ -12,6 +12,15 @@ export function nativeValidateCertificatePath(
   return binding.validateCertificatePath(chain, anchors, checkDateMs);
 }
 
+export function nativeValidateCrl(
+  certificate: Uint8Array,
+  issuerCertificate: Uint8Array,
+  crl: Uint8Array,
+  checkDateMs: number
+) {
+  return binding.validateCrl(certificate, issuerCertificate, crl, checkDateMs);
+}
+
 export function nativeUriSubjectAlternativeNames(der: Uint8Array): string[] {
   try {
     return binding.getUriSubjectAlternativeNames(der);

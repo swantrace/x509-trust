@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { Certificate, CertificateRevocationList } from "pkijs";
+import { CertificateRevocationList } from "pkijs";
 import { type CacheStore, createMemoryCache } from "../src/cache.ts";
 import { createRevocationChecker } from "../src/revocation-checker.ts";
 
-function readCertificate(name: string): Certificate {
+function readCertificate(name: string): Uint8Array {
   const pem = readFileSync(new URL(`./fixtures/${name}.pem`, import.meta.url));
-  return Certificate.fromBER(new X509Certificate(pem).raw);
+  return new X509Certificate(pem).raw;
 }
 
 function readCrl(name: string) {
@@ -354,4 +354,32 @@ test("does not fall back to expired cached data when the loader fails", async ()
     }),
     /source offline/
   );
+});
+
+test("snapshots DER context across asynchronous cache and loader callbacks", async () => {
+  const inputCertificate = Uint8Array.from(certificate);
+  const inputIssuer = Uint8Array.from(issuerCertificate);
+  const checker = createRevocationChecker({ now: () => fixtureTime });
+  let loads = 0;
+  const first = await checker.checkCrl({
+    ...baseOptions,
+    certificate: inputCertificate,
+    issuerCertificate: inputIssuer,
+    load: async () => {
+      loads++;
+      inputCertificate.fill(0);
+      inputIssuer.fill(0);
+      return crl;
+    }
+  });
+  assert.equal(first.status, "good");
+  const cached = await checker.checkCrl({
+    ...baseOptions,
+    load: async () => {
+      loads++;
+      return crl;
+    }
+  });
+  assert.equal(cached.status, "good");
+  assert.equal(loads, 1);
 });

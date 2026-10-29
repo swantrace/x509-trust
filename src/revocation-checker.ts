@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import type { Certificate } from "pkijs";
 import { type CacheStore, createMemoryCache } from "./cache.ts";
 import { type CrlValidationResult, validateCrl } from "./crl.ts";
 import {
@@ -12,8 +11,8 @@ import { type OcspValidationResult, validateOcsp } from "./ocsp.ts";
 const DEFAULT_MAX_CACHE_AGE_MS = 60 * 60 * 1000;
 
 interface RevocationCheckOptions {
-  certificate: Certificate;
-  issuerCertificate: Certificate;
+  certificate: Uint8Array;
+  issuerCertificate: Uint8Array;
   source: string;
   load: () => Promise<Uint8Array>;
   checkDate?: Date;
@@ -24,10 +23,12 @@ type RevocationResult =
   | { status: "good" | "revoked"; nextUpdate: Date }
   | { status: "unknown"; code: string; message: string };
 
-function certificateDer(certificate: Certificate): string {
-  return Buffer.from(certificate.toSchema(true).toBER(false)).toString(
-    "base64"
-  );
+function snapshot(options: RevocationCheckOptions): RevocationCheckOptions {
+  return {
+    ...options,
+    certificate: Uint8Array.from(options.certificate),
+    issuerCertificate: Uint8Array.from(options.issuerCertificate)
+  };
 }
 
 export function createRevocationChecker({
@@ -58,9 +59,10 @@ export function createRevocationChecker({
   ): string {
     const components = [
       options.source,
-      certificateDer(options.issuerCertificate)
+      Buffer.from(options.issuerCertificate).toString("base64")
     ];
-    if (kind === "ocsp") components.push(certificateDer(options.certificate));
+    if (kind === "ocsp")
+      components.push(Buffer.from(options.certificate).toString("base64"));
     const digest = createHash("sha256")
       .update(JSON.stringify(components))
       .digest("base64url");
@@ -199,6 +201,7 @@ export function createRevocationChecker({
     async checkCrl(
       options: RevocationCheckOptions
     ): Promise<CrlValidationResult> {
+      options = snapshot(options);
       const checkDate = options.checkDate;
       if (checkDate && Number.isNaN(checkDate.getTime()))
         throw new TypeError("checkDate must be a valid date");
@@ -223,6 +226,7 @@ export function createRevocationChecker({
     async checkOcsp(
       options: RevocationCheckOptions
     ): Promise<OcspValidationResult> {
+      options = snapshot(options);
       const checkDate = options.checkDate;
       if (checkDate && Number.isNaN(checkDate.getTime()))
         throw new TypeError("checkDate must be a valid date");

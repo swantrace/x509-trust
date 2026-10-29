@@ -4,9 +4,10 @@ Validate X.509 certificate chains and certificate revocation status in Node.js.
 Requires Node.js 24 or later.
 
 This exploration branch uses a Rust addon for URI SAN and revocation endpoint
-extraction (`x509-parser`) and certificate path validation (`rustls-webpki`, with
-the `ring` backend). CRL and OCSP validation still use PKI.js. Path validation
-runs on the Node.js worker pool; certificate inputs are copied before dispatch.
+extraction and CRL validation (`x509-parser`) and certificate path validation
+(`rustls-webpki`, with the `ring` backend). OCSP validation and request encoding
+still use PKI.js. Path and CRL validation run on the Node.js worker pool; inputs
+are copied before dispatch. Internal revocation interfaces carry DER bytes.
 
 Building from source requires stable Rust (Cargo and a platform linker) in
 addition to Node.js. Run `npm ci` to install dependencies and build both the

@@ -1,7 +1,7 @@
 import {
   BasicOCSPResponse,
   CertID,
-  type Certificate,
+  Certificate,
   getAlgorithmByOID,
   id_PKIX_OCSP_Basic,
   OCSPResponse,
@@ -58,19 +58,21 @@ async function matchingResponses(
 
 // Certificate and issuer must belong to a previously validated certificate path.
 export async function validateOcsp({
-  certificate,
-  issuerCertificate,
+  certificate: certificateDer,
+  issuerCertificate: issuerDer,
   response: responseDer,
   checkDate = new Date()
 }: {
-  certificate: Certificate;
-  issuerCertificate: Certificate;
+  certificate: Uint8Array;
+  issuerCertificate: Uint8Array;
   response: Uint8Array;
   checkDate?: Date;
 }): Promise<OcspValidationResult> {
   if (Number.isNaN(checkDate.getTime())) {
     throw new TypeError("checkDate must be a valid date");
   }
+  const certificate = Certificate.fromBER(Uint8Array.from(certificateDer));
+  const issuerCertificate = Certificate.fromBER(Uint8Array.from(issuerDer));
   if (!certificate.issuer.isEqual(issuerCertificate.subject)) {
     return unknownOcspStatus(
       "OCSP_ISSUER_MISMATCH",

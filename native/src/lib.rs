@@ -6,7 +6,11 @@ use x509_parser::oid_registry::{
 };
 use x509_parser::prelude::*;
 
+// napi-rs omits task implementations and registration in Rust test builds.
+#[cfg_attr(test, allow(dead_code))]
 mod certificate_path;
+#[cfg_attr(test, allow(dead_code))]
+mod crl;
 
 /// Minimal native entry point used to verify the mixed Rust/TypeScript setup.
 #[napi]

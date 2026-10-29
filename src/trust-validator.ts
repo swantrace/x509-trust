@@ -1,5 +1,4 @@
 import { X509Certificate } from "node:crypto";
-import { Certificate } from "pkijs";
 import type { CacheStore } from "./cache.ts";
 import { getUriSubjectAlternativeNames } from "./certificate-names.ts";
 import {
@@ -104,8 +103,6 @@ export function createTrustValidator({
       };
     }
 
-    const certificate = Certificate.fromBER(Uint8Array.from(certificateDer));
-    const issuerCertificate = Certificate.fromBER(Uint8Array.from(issuerDer));
     const attempts: Array<
       () => Promise<CrlValidationResult | OcspValidationResult>
     > = [];
@@ -113,8 +110,8 @@ export function createTrustValidator({
       for (const url of endpoints.ocspUrls) {
         attempts.push(() =>
           checker.checkOcsp({
-            certificate,
-            issuerCertificate,
+            certificate: certificateDer,
+            issuerCertificate: issuerDer,
             source: url,
             certificateIndex,
             checkDate,
@@ -132,8 +129,8 @@ export function createTrustValidator({
       for (const url of endpoints.crlUrls) {
         attempts.push(() =>
           checker.checkCrl({
-            certificate,
-            issuerCertificate,
+            certificate: certificateDer,
+            issuerCertificate: issuerDer,
             source: url,
             certificateIndex,
             checkDate,
