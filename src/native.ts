@@ -21,6 +21,27 @@ export function nativeValidateCrl(
   return binding.validateCrl(certificate, issuerCertificate, crl, checkDateMs);
 }
 
+export function nativeCreateOcspRequest(
+  certificate: Uint8Array,
+  issuerCertificate: Uint8Array
+) {
+  return binding.createOcspRequest(certificate, issuerCertificate);
+}
+
+export function nativeValidateOcsp(
+  certificate: Uint8Array,
+  issuerCertificate: Uint8Array,
+  response: Uint8Array,
+  checkDateMs: number
+) {
+  return binding.validateOcsp(
+    certificate,
+    issuerCertificate,
+    response,
+    checkDateMs
+  );
+}
+
 export function nativeUriSubjectAlternativeNames(der: Uint8Array): string[] {
   try {
     return binding.getUriSubjectAlternativeNames(der);

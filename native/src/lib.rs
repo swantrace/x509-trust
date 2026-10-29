@@ -11,6 +11,8 @@ use x509_parser::prelude::*;
 mod certificate_path;
 #[cfg_attr(test, allow(dead_code))]
 mod crl;
+#[cfg_attr(test, allow(dead_code))]
+mod ocsp;
 
 /// Minimal native entry point used to verify the mixed Rust/TypeScript setup.
 #[napi]

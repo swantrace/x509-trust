@@ -7,10 +7,14 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
+der = { version = "0.7.10", features = ["alloc", "derive", "oid"] }
 napi = { version = "3", default-features = false, features = ["napi4", "dyn-symbols"] }
 napi-derive = "3"
+ring = "0.17.14"
 rustls-pki-types = "1.15.1"
 rustls-webpki = { version = "0.103.16", features = ["ring"] }
+x509-cert = { version = "0.2.5", default-features = false }
+x509-ocsp = "0.2.1"
 x509-parser = { version = "0.18.1", features = ["verify"] }
 
 [build-dependencies]

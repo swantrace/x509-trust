@@ -2,11 +2,10 @@ import dns from "node:dns";
 import http from "node:http";
 import https from "node:https";
 import { BlockList, isIP, type LookupFunction } from "node:net";
-import { Certificate, OCSPRequest } from "pkijs";
+import { nativeCreateOcspRequest } from "./native.ts";
 
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
-const OCSP_CERT_ID_HASH = "SHA-1";
 
 const nonPublicAddresses = new BlockList();
 for (const [network, prefix] of [
@@ -204,17 +203,10 @@ export function createHttpLoaders({
       certificate,
       issuerCertificate
     }: OcspLoadOptions): Promise<Uint8Array> {
-      const ocsp = new OCSPRequest();
-      await ocsp.createForCertificate(
-        Certificate.fromBER(Uint8Array.from(certificate)),
-        {
-          issuerCertificate: Certificate.fromBER(
-            Uint8Array.from(issuerCertificate)
-          ),
-          hashAlgorithm: OCSP_CERT_ID_HASH
-        }
+      return request(
+        url,
+        await nativeCreateOcspRequest(certificate, issuerCertificate)
       );
-      return request(url, new Uint8Array(ocsp.toSchema(true).toBER(false)));
     }
   };
 }

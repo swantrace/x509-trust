@@ -83,7 +83,7 @@ fn directory_string(attribute: &AttributeTypeAndValue<'_>) -> Option<String> {
     }
 }
 
-fn names_equal(left: &X509Name<'_>, right: &X509Name<'_>) -> bool {
+pub(crate) fn names_equal(left: &X509Name<'_>, right: &X509Name<'_>) -> bool {
     if left.as_raw() == right.as_raw() {
         return true;
     }
