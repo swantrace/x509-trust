@@ -20,7 +20,10 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - run: rustup update stable && rustup default stable
       - run: npm ci
+      - run: cargo fmt --manifest-path native/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path native/Cargo.toml -- -D warnings
       - run: npm run format:check
       - run: npm run typecheck
       - run: npm test

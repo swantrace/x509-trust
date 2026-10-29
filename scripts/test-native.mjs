@@ -1,6 +1,8 @@
-const native = await import("../native/index.node");
+import { createRequire } from "node:module";
 
-if (native.default.nativeReady() !== true) {
+const native = createRequire(import.meta.url)("../native/index.node");
+
+if (native.nativeReady() !== true) {
   throw new Error("nativeReady() did not return true");
 }
 

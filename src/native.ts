@@ -1,0 +1,30 @@
+import { createRequire } from "node:module";
+
+const binding: typeof import("../native/index.js") = createRequire(
+  import.meta.url
+)("../native/index.node");
+
+export function nativeUriSubjectAlternativeNames(der: Uint8Array): string[] {
+  try {
+    return binding.getUriSubjectAlternativeNames(der);
+  } catch (cause) {
+    throw new TypeError(
+      cause instanceof Error ? cause.message : "Invalid certificate",
+      { cause }
+    );
+  }
+}
+
+export function nativeRevocationEndpoints(der: Uint8Array): {
+  crlUrls: string[];
+  ocspUrls: string[];
+} {
+  try {
+    return binding.getRevocationEndpoints(der);
+  } catch (cause) {
+    throw new TypeError(
+      cause instanceof Error ? cause.message : "Invalid certificate",
+      { cause }
+    );
+  }
+}

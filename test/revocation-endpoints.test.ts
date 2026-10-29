@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { OctetString } from "asn1js";
 import {
   AccessDescription,
   Certificate,
@@ -18,6 +19,31 @@ import {
 } from "pkijs";
 import { getRevocationEndpoints } from "../src/revocation-endpoints.ts";
 
+function certificateWithExtensions({
+  extensions
+}: {
+  extensions: Extension[];
+}) {
+  const pem = readFileSync(new URL("./fixtures/leaf.pem", import.meta.url));
+  const certificate = Certificate.fromBER(new X509Certificate(pem).raw);
+  for (const extension of extensions) {
+    if (
+      extension.extnValue.valueBlock.valueHexView.length === 0 &&
+      extension.parsedValue
+    ) {
+      extension.extnValue = new OctetString({
+        valueHex: extension.parsedValue.toSchema().toBER(false)
+      });
+    }
+  }
+  certificate.extensions = extensions;
+  return certificate;
+}
+
+function der(certificate: Certificate): Uint8Array {
+  return new Uint8Array(certificate.toSchema(true).toBER(false));
+}
+
 for (const [name, issuer] of [
   ["leaf", "intermediate"],
   ["revoked-leaf", "intermediate"],
@@ -29,7 +55,7 @@ for (const [name, issuer] of [
     );
     const certificate = Certificate.fromBER(new X509Certificate(pem).raw);
 
-    assert.deepEqual(getRevocationEndpoints(certificate), {
+    assert.deepEqual(getRevocationEndpoints(der(certificate)), {
       crlUrls: [`http://crl.example.test/${issuer}.crl`],
       ocspUrls: [`http://ocsp.example.test/${issuer}`]
     });
@@ -40,21 +66,23 @@ test("returns empty arrays when a root has no revocation extensions", () => {
   const pem = readFileSync(new URL("./fixtures/root.pem", import.meta.url));
   const certificate = Certificate.fromBER(new X509Certificate(pem).raw);
 
-  assert.deepEqual(getRevocationEndpoints(certificate), {
+  assert.deepEqual(getRevocationEndpoints(der(certificate)), {
     crlUrls: [],
     ocspUrls: []
   });
 });
 
 test("returns empty arrays when a certificate has no extensions", () => {
-  assert.deepEqual(getRevocationEndpoints(new Certificate()), {
+  const certificate = certificateWithExtensions({ extensions: [] });
+  delete certificate.extensions;
+  assert.deepEqual(getRevocationEndpoints(der(certificate)), {
     crlUrls: [],
     ocspUrls: []
   });
 });
 
 test("keeps multiple addresses in order and excludes issuer locations and non-URI names", () => {
-  const certificate = new Certificate({
+  const certificate = certificateWithExtensions({
     extensions: [
       new Extension({
         extnID: id_CRLDistributionPoints,
@@ -125,7 +153,7 @@ test("keeps multiple addresses in order and excludes issuer locations and non-UR
     ]
   });
 
-  assert.deepEqual(getRevocationEndpoints(certificate), {
+  assert.deepEqual(getRevocationEndpoints(der(certificate)), {
     crlUrls: [
       "http://primary.test/ca.crl",
       "http://backup.test/ca.crl",
@@ -137,7 +165,7 @@ test("keeps multiple addresses in order and excludes issuer locations and non-UR
 
 for (const extnID of [id_CRLDistributionPoints, id_AuthorityInfoAccess]) {
   test(`rejects a malformed ${extnID} extension instead of treating it as missing`, () => {
-    const certificate = new Certificate({
+    const certificate = certificateWithExtensions({
       extensions: [
         new Extension({
           extnID,
@@ -146,6 +174,29 @@ for (const extnID of [id_CRLDistributionPoints, id_AuthorityInfoAccess]) {
       ]
     });
 
-    assert.throws(() => getRevocationEndpoints(certificate), TypeError);
+    assert.throws(() => getRevocationEndpoints(der(certificate)), TypeError);
+  });
+
+  test(`rejects duplicate ${extnID} extensions`, () => {
+    const pem = readFileSync(new URL("./fixtures/leaf.pem", import.meta.url));
+    const certificate = Certificate.fromBER(new X509Certificate(pem).raw);
+    const extension = certificate.extensions!.find(
+      (entry) => entry.extnID === extnID
+    )!;
+    certificate.extensions!.push(extension);
+    assert.throws(() => getRevocationEndpoints(der(certificate)), TypeError);
   });
 }
+
+test("rejects malformed, truncated and trailing DER bytes", () => {
+  const pem = readFileSync(new URL("./fixtures/leaf.pem", import.meta.url));
+  const certificate = new X509Certificate(pem).raw;
+  for (const input of [
+    new Uint8Array(),
+    new Uint8Array([0x05, 0x00]),
+    certificate.subarray(0, certificate.length - 1),
+    Buffer.concat([certificate, Buffer.from([0x00])])
+  ]) {
+    assert.throws(() => getRevocationEndpoints(input), TypeError);
+  }
+});

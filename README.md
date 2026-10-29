@@ -3,6 +3,16 @@
 Validate X.509 certificate chains and certificate revocation status in Node.js.
 Requires Node.js 24 or later.
 
+This exploration branch uses a Rust addon for URI SAN and revocation endpoint
+extraction. Path, CRL, and OCSP validation still use PKI.js.
+
+Building from source requires stable Rust (Cargo and a platform linker) in
+addition to Node.js. Run `npm ci` to install dependencies and build both the
+native addon and TypeScript. Use `npm test` for the test suite and `npm run build`
+to rebuild both. `npm run prepack` builds an optimized native addon for packaging.
+Packages currently contain a binary for the build host only; cross-platform
+prebuilt distribution is not configured yet.
+
 ## Quick start
 
 ```sh

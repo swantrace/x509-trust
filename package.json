@@ -22,7 +22,9 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "native/index.node",
+    "native/index.d.ts"
   ],
   "keywords": [
     "x509",
@@ -32,16 +34,19 @@
     "ocsp"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "npm run build:native && npm run build:ts",
+    "build:release": "npm run build:native:release && npm run build:ts",
+    "build:ts": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "format": "biome check --write .",
     "format:check": "biome check .",
-    "build:native": "napi build --manifest-path native/Cargo.toml --output-dir native",
-    "build:native:release": "napi build --manifest-path native/Cargo.toml --output-dir native --release",
+    "build:native": "napi build --manifest-path native/Cargo.toml --output-dir native && biome format --write native/index.d.ts",
+    "build:native:release": "napi build --manifest-path native/Cargo.toml --output-dir native --release && biome format --write native/index.d.ts",
     "test:native": "npm run build:native && node scripts/test-native.mjs",
+    "pretest": "npm run build:native",
     "test": "node --test test/*.test.ts",
-    "prepare": "husky && npm run build",
-    "prepack": "npm run build"
+    "prepare": "husky && npm run build:release",
+    "prepack": "npm run build:release"
   },
   "lint-staged": {
     "*.{js,ts,json,jsonc}": "biome check --write --no-errors-on-unmatched"

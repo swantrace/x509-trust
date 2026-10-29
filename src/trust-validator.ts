@@ -1,7 +1,7 @@
 import { X509Certificate } from "node:crypto";
 import { Certificate } from "pkijs";
 import type { CacheStore } from "./cache.ts";
-import { uriSubjectAlternativeNames } from "./certificate-names.ts";
+import { getUriSubjectAlternativeNames } from "./certificate-names.ts";
 import {
   type CertificateInput,
   validateCertificatePath
@@ -89,14 +89,14 @@ export function createTrustValidator({
   });
 
   async function checkCertificateRevocation(
-    certificate: Certificate,
-    issuerCertificate: Certificate,
+    certificateDer: Uint8Array,
+    issuerDer: Uint8Array,
     certificateIndex: number,
     checkDate?: Date
   ): Promise<CertificateRevocation> {
     let endpoints: ReturnType<typeof getRevocationEndpoints>;
     try {
-      endpoints = getRevocationEndpoints(certificate);
+      endpoints = getRevocationEndpoints(certificateDer);
     } catch {
       return {
         status: "unknown",
@@ -104,6 +104,8 @@ export function createTrustValidator({
       };
     }
 
+    const certificate = Certificate.fromBER(Uint8Array.from(certificateDer));
+    const issuerCertificate = Certificate.fromBER(Uint8Array.from(issuerDer));
     const attempts: Array<
       () => Promise<CrlValidationResult | OcspValidationResult>
     > = [];
@@ -119,12 +121,8 @@ export function createTrustValidator({
             load: () =>
               ocspLoader({
                 url,
-                certificate: new Uint8Array(
-                  certificate.toSchema().toBER(false)
-                ),
-                issuerCertificate: new Uint8Array(
-                  issuerCertificate.toSchema().toBER(false)
-                )
+                certificate: Uint8Array.from(certificateDer),
+                issuerCertificate: Uint8Array.from(issuerDer)
               })
           })
         );
@@ -173,13 +171,10 @@ export function createTrustValidator({
         return { valid: false, code: path.code, message: path.message };
       }
 
-      const certificates = path.certificatePath.map((der) =>
-        Certificate.fromBER(Uint8Array.from(der))
-      );
       let leafUriSubjectAlternativeNames: string[];
       try {
-        leafUriSubjectAlternativeNames = uriSubjectAlternativeNames(
-          certificates[0]
+        leafUriSubjectAlternativeNames = getUriSubjectAlternativeNames(
+          path.certificatePath[0]
         );
       } catch {
         return {
@@ -188,10 +183,10 @@ export function createTrustValidator({
           message: "Invalid leaf subject alternative name extension"
         };
       }
-      for (let index = 0; index < certificates.length - 1; index++) {
+      for (let index = 0; index < path.certificatePath.length - 1; index++) {
         const revocation = await checkCertificateRevocation(
-          certificates[index],
-          certificates[index + 1],
+          path.certificatePath[index],
+          path.certificatePath[index + 1],
           index,
           checkDate
         );

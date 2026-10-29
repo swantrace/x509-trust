@@ -56,6 +56,9 @@ test("public API validates a full path using CRLs for leaf and intermediate", as
     certificateChain: [leaf, intermediate]
   });
   assert.equal(result.valid, true);
+  assert.deepEqual(result.leafUriSubjectAlternativeNames, [
+    "https://client.example.org/app"
+  ]);
   assert.equal(
     result.trustAnchorFingerprint256,
     new X509Certificate(root).fingerprint256
