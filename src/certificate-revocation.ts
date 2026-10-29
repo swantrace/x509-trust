@@ -2,7 +2,6 @@ import type {
   NativeRevocationTarget,
   RevocationStatus
 } from "../native/index.js";
-import type { createRevocationBatch } from "./revocation-batch.ts";
 import type { createRevocationChecker } from "./revocation-checker.ts";
 import type {
   CrlValidationResult,
@@ -18,12 +17,14 @@ export function createCertificateRevocationChecker({
   loadCrl: crlLoader,
   loadOcsp: ocspLoader,
   checker,
-  batch
+  shouldStop,
+  signal
 }: {
   loadCrl: TrustValidatorOptions["loadCrl"];
   loadOcsp: TrustValidatorOptions["loadOcsp"];
   checker: ReturnType<typeof createRevocationChecker>;
-  batch: ReturnType<typeof createRevocationBatch>;
+  shouldStop: () => boolean;
+  signal: AbortSignal;
 }) {
   return async function checkCertificateRevocation(
     target: NativeRevocationTarget,
@@ -46,16 +47,15 @@ export function createCertificateRevocationChecker({
             source: url,
             certificateIndex,
             checkDate,
-            shouldStop: batch.isRevoked,
-            validate: (data) =>
-              batch.validateOcsp(certificateIndex, data, checkDate),
+            shouldStop,
             load: () =>
               ocspLoader({
                 url,
                 certificate: Uint8Array.from(certificateDer),
                 issuerCertificate: Uint8Array.from(issuerDer),
                 request:
-                  target.ocspRequest && Uint8Array.from(target.ocspRequest)
+                  target.ocspRequest && Uint8Array.from(target.ocspRequest),
+                signal
               })
           })
         );
@@ -70,10 +70,8 @@ export function createCertificateRevocationChecker({
             source: url,
             certificateIndex,
             checkDate,
-            shouldStop: batch.isRevoked,
-            validate: (data) =>
-              batch.validateCrl(certificateIndex, data, checkDate),
-            load: () => crlLoader(url)
+            shouldStop,
+            load: () => crlLoader(url, { signal })
           })
         );
       }
@@ -82,7 +80,7 @@ export function createCertificateRevocationChecker({
     let message =
       "No usable CRL or OCSP source is configured for this certificate";
     for (const attempt of attempts) {
-      if (batch.isRevoked()) break;
+      if (shouldStop()) break;
       try {
         const result = await attempt();
         if (result.status !== "unknown") return result;

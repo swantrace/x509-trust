@@ -259,6 +259,19 @@ test("the deadline includes a stalled response body", async (t) => {
   await assert.rejects(loaders.loadCrl(origin), /abort/i);
 });
 
+test("a caller can abort an in-flight revocation request", async (t) => {
+  const origin = await startServer(t, (_request, response) => {
+    response.writeHead(200);
+    response.flushHeaders();
+  });
+  const controller = new AbortController();
+  const pending = createHttpLoaders({
+    allowPrivateAddresses: true
+  }).loadCrl(origin, { signal: controller.signal });
+  controller.abort();
+  await assert.rejects(pending, /abort/i);
+});
+
 test("rejects non-public literal addresses and unsafe URLs before opening a connection", async (t) => {
   let calls = 0;
   t.mock.method(http, "request", (() => {

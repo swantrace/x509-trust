@@ -19,11 +19,11 @@ trailing DER bytes. TypeScript reuses the generated native declarations for
 revocation statuses, error codes and native function signatures; its API types
 still describe JavaScript dates, callbacks and validation orchestration.
 
-Normal cold and cached verification each use two native API calls: path
-preparation (including SANs, revocation URLs and OCSP requests), then batch
-revocation validation. Fallbacks may require additional validation batches.
-Construction snapshots inputs in TypeScript without native calls; malformed
-trust-anchor certificates fail during `verify` before evidence retrieval.
+Verification first prepares the path in one native call. Each cached or loaded
+CRL/OCSP response is then sent to Rust as soon as it arrives, so a slow response
+does not delay authentication of another certificate's evidence. Construction
+snapshots inputs in TypeScript without native calls; malformed trust-anchor
+certificates fail during `verify` before evidence retrieval.
 
 See [verification flow](docs/verification-flow.md) for the TypeScript module
 layout and the Rust entry and exit points used by `verify`.
@@ -75,7 +75,9 @@ type CertificateInput = string | Uint8Array;
 
 interface TrustValidatorOptions {
   trustAnchors: readonly CertificateInput[];
-  loadCrl?: ((url: string) => Promise<Uint8Array>) | false;
+  loadCrl?: (
+    (url: string, options?: CrlLoadOptions) => Promise<Uint8Array>
+  ) | false;
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
   http?: HttpOptions;
   cache?: CacheStore;
@@ -90,6 +92,11 @@ interface OcspLoadOptions {
   certificate: Uint8Array;
   issuerCertificate: Uint8Array;
   request?: Uint8Array;
+  signal?: AbortSignal;
+}
+
+interface CrlLoadOptions {
+  signal?: AbortSignal;
 }
 
 interface HttpOptions {
@@ -234,8 +241,9 @@ Points extensions are tried in this order:
 
 Different certificates load their current sources concurrently after path
 validation. Initial intermediate requests may already be in flight when a
-revoked leaf is discovered. Ready evidence is authenticated in batches; an
-authenticated revoked result takes precedence over unknown results in its batch.
+revoked leaf is discovered. Each response is authenticated immediately; an
+authenticated revoked result completes `verify` without waiting for other
+certificates and aborts their built-in HTTP requests.
 
 OCSP-first is this library's policy, not a UDAP requirement. It queries status
 for the individual certificate before falling back to downloading a CRL.
@@ -328,12 +336,15 @@ Supply `loadCrl` or `loadOcsp` to retrieve evidence through your own transport o
 from offline storage. Callbacks return DER bytes; OCSP callbacks receive the
 target certificate and its issuer as DER bytes, plus `request` when Rust could
 prepare the OCSP request. Loaders can be invoked concurrently for different
-certificates. The library still validates the returned evidence.
+certificates. Both loader forms receive an optional abort signal and should honor
+it so work stops promptly after another certificate is confirmed revoked. The
+library still validates the returned evidence.
 
 ```typescript
 const validator = createTrustValidator({
   trustAnchors: [rootCertificate],
-  loadCrl: async (url) => readCrlFromStorage(url),
+  loadCrl: async (url, { signal } = {}) =>
+    readCrlFromStorage(url, { signal }),
   loadOcsp: false
 });
 ```

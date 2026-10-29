@@ -12,6 +12,13 @@ export interface OcspLoadOptions {
   issuerCertificate: Uint8Array;
   /** Prepared by Rust with the validated path. Custom loaders may ignore it. */
   request?: Uint8Array;
+  /** Aborted when another certificate is confirmed revoked. */
+  signal?: AbortSignal;
+}
+
+export interface CrlLoadOptions {
+  /** Aborted when another certificate is confirmed revoked. */
+  signal?: AbortSignal;
 }
 
 export interface HttpOptions {
@@ -42,7 +49,8 @@ export function createHttpLoaders({
 
   async function request(
     urlString: string,
-    body?: Uint8Array
+    body?: Uint8Array,
+    signal?: AbortSignal
   ): Promise<Uint8Array> {
     const url = parseHttpUrl(urlString);
     if (origins && !origins.has(url.origin))
@@ -63,7 +71,9 @@ export function createHttpLoaders({
           method: body ? "POST" : "GET",
           agent: false,
           lookup: allowPrivateAddresses ? undefined : publicLookup,
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: signal
+            ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+            : AbortSignal.timeout(timeoutMs),
           headers: body
             ? {
                 "Content-Type": "application/ocsp-request",
@@ -112,8 +122,11 @@ export function createHttpLoaders({
   }
 
   return {
-    async loadCrl(url: string): Promise<Uint8Array> {
-      const data = await request(url);
+    async loadCrl(
+      url: string,
+      { signal }: CrlLoadOptions = {}
+    ): Promise<Uint8Array> {
+      const data = await request(url, undefined, signal);
       const text = Buffer.from(data).toString("ascii").trim();
       if (!text.startsWith("-----BEGIN")) return data;
       const pem =
@@ -125,10 +138,11 @@ export function createHttpLoaders({
     },
     async loadOcsp({
       url,
-      request: body
+      request: body,
+      signal
     }: OcspLoadOptions): Promise<Uint8Array> {
       if (!body) throw new Error("OCSP request DER is required");
-      return request(url, body);
+      return request(url, body, signal);
     }
   };
 }

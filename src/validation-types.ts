@@ -1,11 +1,17 @@
 import type { CacheStore } from "./cache.ts";
 import type { CertificateInput } from "./certificates.ts";
 import type { DiagnosticCallback } from "./diagnostics.ts";
-import type { HttpOptions, OcspLoadOptions } from "./http-loaders.ts";
+import type {
+  CrlLoadOptions,
+  HttpOptions,
+  OcspLoadOptions
+} from "./http-loaders.ts";
 
 export interface TrustValidatorOptions {
   trustAnchors: readonly CertificateInput[];
-  loadCrl?: ((url: string) => Promise<Uint8Array>) | false;
+  loadCrl?:
+    | ((url: string, options?: CrlLoadOptions) => Promise<Uint8Array>)
+    | false;
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
   http?: HttpOptions;
   cache?: CacheStore;

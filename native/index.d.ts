@@ -36,17 +36,6 @@ export interface NativeCrlResult {
   message?: string;
 }
 
-export interface NativeEvidenceInput {
-  certificateIndex: number;
-  mechanism: string;
-  data: Uint8Array;
-  checkDateMs: number;
-}
-
-export type NativeEvidenceResult =
-  | { mechanism: "crl"; certificateIndex: number; result: NativeCrlResult }
-  | { mechanism: "ocsp"; certificateIndex: number; result: NativeOcspResult };
-
 export interface NativeOcspResult {
   status: RevocationStatus;
   thisUpdateMs?: number;
@@ -111,12 +100,6 @@ export declare function validateCrl(
   crl: Uint8Array,
   checkDateMs: number
 ): Promise<NativeCrlResult>;
-
-/** Every certificate/issuer pair must belong to a previously validated path. */
-export declare function validateEvidence(
-  path: Array<Uint8Array>,
-  evidence: Array<NativeEvidenceInput>
-): Promise<Array<NativeEvidenceResult>>;
 
 /** Certificate and issuer must belong to a previously validated path. */
 export declare function validateOcsp(

@@ -105,14 +105,27 @@ test("public API supports OCSP callbacks with DER certificate and issuer context
   ]);
 });
 
-test("rejects a revoked client after checking the current parallel batch", async () => {
+test("returns revoked without waiting for another certificate's request", async () => {
   let loads = 0;
+  let aborted = false;
   const validator = createTrustValidator({
     trustAnchors: [root],
     now,
     loadOcsp: false,
-    async loadCrl(url) {
+    async loadCrl(url, { signal } = {}) {
       loads++;
+      if (url.endsWith("/root.crl")) {
+        return new Promise<Uint8Array>((_resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => {
+              aborted = true;
+              reject(signal.reason);
+            },
+            { once: true }
+          );
+        });
+      }
       return loadCrl(url);
     }
   });
@@ -123,6 +136,50 @@ test("rejects a revoked client after checking the current parallel batch", async
   assert.equal(result.code, "CERTIFICATE_REVOKED");
   assert.equal(result.certificateIndex, 0);
   assert.equal(loads, 2);
+  assert.equal(aborted, true);
+});
+
+test("reports the index of a revoked intermediate certificate", async () => {
+  const { Certificate, CertificateRevocationList, RevokedCertificate, Time } =
+    await import("pkijs");
+  const decode = (pem: string) =>
+    Certificate.fromBER(new X509Certificate(pem).raw);
+  const keys = await crypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" },
+    true,
+    ["sign", "verify"]
+  );
+  const signedRoot = decode(root);
+  await signedRoot.subjectPublicKeyInfo.importKey(keys.publicKey);
+  await signedRoot.sign(keys.privateKey, "SHA-256");
+  const signedIntermediate = decode(intermediate);
+  await signedIntermediate.sign(keys.privateKey, "SHA-256");
+  const revokedCrl = CertificateRevocationList.fromBER(readCrl("root"));
+  revokedCrl.revokedCertificates = [
+    new RevokedCertificate({
+      userCertificate: signedIntermediate.serialNumber,
+      revocationDate: new Time({ type: 1, value: checkDate })
+    })
+  ];
+  await revokedCrl.sign(keys.privateKey, "SHA-256");
+
+  const result = await createTrustValidator({
+    trustAnchors: [new Uint8Array(signedRoot.toSchema().toBER(false))],
+    now,
+    loadOcsp: false,
+    loadCrl: async (url) =>
+      url.endsWith("/root.crl")
+        ? new Uint8Array(revokedCrl.toSchema().toBER(false))
+        : Buffer.of(0)
+  }).verify({
+    certificateChain: [
+      leaf,
+      new Uint8Array(signedIntermediate.toSchema().toBER(false))
+    ]
+  });
+  assert.equal(result.valid, false);
+  assert.equal(result.code, "CERTIFICATE_REVOKED");
+  assert.equal(result.certificateIndex, 1);
 });
 
 test("a good leaf status is insufficient when intermediate status cannot be established", async () => {
@@ -233,15 +290,15 @@ test("falls back from OCSP transport failures to valid CRLs", async () => {
 });
 
 test("never overrides an authenticated revoked response with a good CRL", async () => {
-  let crlLoads = 0;
+  const crlUrls: string[] = [];
   const validator = createTrustValidator({
     trustAnchors: [root],
     now,
     async loadOcsp() {
       return readOcsp("revoked");
     },
-    async loadCrl() {
-      crlLoads++;
+    async loadCrl(url) {
+      crlUrls.push(url);
       return readCrl("intermediate-clean");
     }
   });
@@ -250,7 +307,10 @@ test("never overrides an authenticated revoked response with a good CRL", async 
   });
   assert.equal(result.valid, false);
   assert.equal(result.code, "CERTIFICATE_REVOKED");
-  assert.equal(crlLoads, 0);
+  assert.equal(
+    crlUrls.includes("http://crl.example.test/intermediate.crl"),
+    false
+  );
 });
 
 test("returns a validation failure when all evidence is unusable", async () => {

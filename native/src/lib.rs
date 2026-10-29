@@ -14,8 +14,6 @@ mod certificate_path;
 mod crl;
 #[cfg_attr(test, allow(dead_code))]
 mod ocsp;
-#[cfg_attr(test, allow(dead_code))]
-mod revocation;
 
 #[napi(string_enum = "lowercase")]
 pub enum RevocationStatus {

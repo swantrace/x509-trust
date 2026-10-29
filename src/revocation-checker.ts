@@ -119,7 +119,9 @@ export function createRevocationChecker({
     let result: T;
     let data: Uint8Array;
     try {
+      if (shouldStop()) throw new Error("Revocation check stopped");
       data = Uint8Array.from(await load());
+      if (shouldStop()) throw new Error("Revocation check stopped");
       result = await validate(data);
     } catch (error) {
       notify({

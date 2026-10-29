@@ -4,7 +4,11 @@ export {
   getUriSubjectAlternativeNames
 } from "./certificates.ts";
 export type { DiagnosticCallback, DiagnosticEvent } from "./diagnostics.ts";
-export type { HttpOptions, OcspLoadOptions } from "./http-loaders.ts";
+export type {
+  CrlLoadOptions,
+  HttpOptions,
+  OcspLoadOptions
+} from "./http-loaders.ts";
 export { createTrustValidator } from "./trust-validator.ts";
 export type {
   TrustValidator,

@@ -10,7 +10,6 @@ export const nativeValidateCertificatePath = binding.validateCertificatePath;
 export const nativeValidateCrl = binding.validateCrl;
 export const nativeCreateOcspRequest = binding.createOcspRequest;
 export const nativeValidateOcsp = binding.validateOcsp;
-export const nativeValidateEvidence = binding.validateEvidence;
 
 export function nativeCertificateDer(input: Uint8Array): Uint8Array {
   try {

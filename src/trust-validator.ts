@@ -1,7 +1,6 @@
 import { createCertificateRevocationChecker } from "./certificate-revocation.ts";
 import { certificateBytes, validateCertificatePath } from "./certificates.ts";
 import { createHttpLoaders } from "./http-loaders.ts";
-import { createRevocationBatch } from "./revocation-batch.ts";
 import { createRevocationChecker } from "./revocation-checker.ts";
 import type {
   TrustValidator,
@@ -53,49 +52,64 @@ export function createTrustValidator({
         return { valid: false, code: path.code, message: path.message };
       }
 
-      const batch = createRevocationBatch(
-        path.certificatePath,
-        path.revocationTargets.map((target) => target.certificateIndex),
-        now
-      );
+      const controller = new AbortController();
+      let revoked = false;
+      let reportRevoked!: (certificateIndex: number) => void;
+      const revokedSignal = new Promise<number>((resolve) => {
+        reportRevoked = resolve;
+      });
       const checkCertificateRevocation = createCertificateRevocationChecker({
         loadCrl: crlLoader,
         loadOcsp: ocspLoader,
         checker,
-        batch
+        shouldStop: () => revoked,
+        signal: controller.signal
       });
-      const results = await Promise.all(
+      const allResults = Promise.all(
         path.revocationTargets.map(async (target) => {
-          try {
-            return await checkCertificateRevocation(
-              target,
-              path.certificatePath,
-              checkDate
-            );
-          } finally {
-            batch.complete(target.certificateIndex);
+          const result = await checkCertificateRevocation(
+            target,
+            path.certificatePath,
+            checkDate
+          );
+          if (result.status === "revoked" && !revoked) {
+            revoked = true;
+            reportRevoked(target.certificateIndex);
+            controller.abort();
           }
+          return { certificateIndex: target.certificateIndex, result };
         })
       );
-      const revokedIndex = results.findIndex(
-        (result) => result.status === "revoked"
-      );
-      if (revokedIndex !== -1) {
+      const outcome = await Promise.race([
+        allResults.then((results) => ({ results })),
+        revokedSignal.then((certificateIndex) => ({ certificateIndex }))
+      ]);
+      if ("certificateIndex" in outcome) {
         return {
           valid: false,
           code: "CERTIFICATE_REVOKED",
           message: "Certificate has been revoked",
-          certificateIndex: revokedIndex
+          certificateIndex: outcome.certificateIndex
         };
       }
-      for (let index = 0; index < results.length; index++) {
-        const revocation = results[index];
+      const revokedResult = outcome.results.find(
+        ({ result }) => result.status === "revoked"
+      );
+      if (revokedResult) {
+        return {
+          valid: false,
+          code: "CERTIFICATE_REVOKED",
+          message: "Certificate has been revoked",
+          certificateIndex: revokedResult.certificateIndex
+        };
+      }
+      for (const { certificateIndex, result: revocation } of outcome.results) {
         if (revocation.status === "unknown") {
           return {
             valid: false,
             code: "REVOCATION_STATUS_UNKNOWN",
             message: revocation.message,
-            certificateIndex: index
+            certificateIndex
           };
         }
       }
