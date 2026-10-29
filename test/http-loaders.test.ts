@@ -8,6 +8,7 @@ import { type TestContext, test } from "node:test";
 import { BasicOCSPResponse, OCSPRequest, OCSPResponse } from "pkijs";
 import { createHttpLoaders } from "../src/http-loaders.ts";
 import { createTrustValidator } from "../src/index.ts";
+import { nativeValidateCertificatePath } from "../src/native.ts";
 
 function fixture(name: string) {
   return readFileSync(new URL(`./fixtures/${name}`, import.meta.url));
@@ -109,10 +110,16 @@ test("POSTs a DER OCSP request identifying the certificate and issuing key", asy
     response.end(fixture("ocsp/good.der"));
   });
   const loaders = createHttpLoaders({ allowPrivateAddresses: true });
+  const prepared = await nativeValidateCertificatePath(
+    [fixture("leaf.pem"), fixture("intermediate.pem")],
+    [fixture("root.pem")],
+    checkDate.getTime()
+  );
   const data = await loaders.loadOcsp({
     url: `${origin}/ocsp`,
     certificate: new X509Certificate(fixture("leaf.pem")).raw,
-    issuerCertificate: new X509Certificate(fixture("intermediate.pem")).raw
+    issuerCertificate: new X509Certificate(fixture("intermediate.pem")).raw,
+    request: prepared.revocationTargets[0].ocspRequest
   });
   assert.deepEqual(Buffer.from(data), fixture("ocsp/good.der"));
   assert.equal(method, "POST");
@@ -192,12 +199,15 @@ test("default public loaders fall back from unavailable OCSP to downloaded CRLs"
     ).valid,
     true
   );
-  assert.deepEqual(requests, [
-    "POST /intermediate",
-    "GET /intermediate.crl",
-    "POST /root",
-    "GET /root.crl"
-  ]);
+  assert.deepEqual(
+    requests.slice().sort(),
+    [
+      "POST /intermediate",
+      "GET /intermediate.crl",
+      "POST /root",
+      "GET /root.crl"
+    ].sort()
+  );
 });
 
 test("rejects redirects and HTTP errors without following their Location", async (t) => {

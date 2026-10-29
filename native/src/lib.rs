@@ -14,6 +14,8 @@ mod certificate_path;
 mod crl;
 #[cfg_attr(test, allow(dead_code))]
 mod ocsp;
+#[cfg_attr(test, allow(dead_code))]
+mod revocation;
 
 #[napi(string_enum = "lowercase")]
 pub enum RevocationStatus {
@@ -41,9 +43,7 @@ fn parse_certificate(der: &[u8]) -> Result<X509Certificate<'_>> {
     Ok(certificate)
 }
 
-/// Decode one PEM or DER certificate and return an independent DER snapshot.
-#[napi]
-pub fn certificate_der(input: &[u8]) -> Result<Uint8Array> {
+pub(crate) fn decode_certificate(input: &[u8]) -> Result<Vec<u8>> {
     let der = if input.first() == Some(&0x30) {
         input.to_vec()
     } else {
@@ -73,7 +73,12 @@ pub fn certificate_der(input: &[u8]) -> Result<Uint8Array> {
         pem.contents
     };
     parse_certificate(&der)?;
-    Ok(der.into())
+    Ok(der)
+}
+
+#[napi]
+pub fn certificate_der(input: &[u8]) -> Result<Uint8Array> {
+    decode_certificate(input).map(Uint8Array::from)
 }
 
 fn uri_name(name: &GeneralName<'_>) -> Result<Option<String>> {
@@ -85,8 +90,9 @@ fn uri_name(name: &GeneralName<'_>) -> Result<Option<String>> {
 }
 
 #[napi]
-pub fn get_uri_subject_alternative_names(der: &[u8]) -> Result<Vec<String>> {
-    let certificate = parse_certificate(der)?;
+pub fn get_uri_subject_alternative_names(input: &[u8]) -> Result<Vec<String>> {
+    let der = decode_certificate(input)?;
+    let certificate = parse_certificate(&der)?;
     let san = certificate
         .subject_alternative_name()
         .map_err(|_| invalid("Invalid subject alternative name extension"))?;

@@ -161,11 +161,11 @@ test("rejects invalid configuration before path validation", async () => {
     }),
     TypeError
   );
-  await assert.rejects(
-    validateCertificatePath({
-      certificateChain: [leaf],
-      trustAnchors: ["not a certificate"],
-      checkDate
-    })
-  );
+  const invalidAnchor = await validateCertificatePath({
+    certificateChain: [leaf],
+    trustAnchors: ["not a certificate"],
+    checkDate
+  });
+  assert.ok(!invalidAnchor.pathValid);
+  assert.equal(invalidAnchor.code, "INVALID_CERTIFICATE");
 });

@@ -1,3 +1,4 @@
+import type { NativeValidatedPath } from "../native/index.js";
 import {
   nativeCertificateDer,
   nativeUriSubjectAlternativeNames,
@@ -6,16 +7,18 @@ import {
 
 export type CertificateInput = string | Uint8Array;
 
+export function certificateBytes(input: CertificateInput): Uint8Array {
+  return typeof input === "string" ? Buffer.from(input) : input;
+}
+
 export function certificateDer(input: CertificateInput): Uint8Array {
-  return nativeCertificateDer(
-    typeof input === "string" ? Buffer.from(input) : input
-  );
+  return nativeCertificateDer(certificateBytes(input));
 }
 
 export function getUriSubjectAlternativeNames(
   certificate: CertificateInput
 ): string[] {
-  return nativeUriSubjectAlternativeNames(certificateDer(certificate));
+  return nativeUriSubjectAlternativeNames(certificateBytes(certificate));
 }
 
 interface CertificatePathOptions {
@@ -26,11 +29,7 @@ interface CertificatePathOptions {
 }
 
 type CertificatePathResult =
-  | {
-      pathValid: true;
-      certificatePath: Uint8Array[];
-      trustAnchorFingerprint256: string;
-    }
+  | ({ pathValid: true } & NativeValidatedPath)
   | {
       pathValid: false;
       code: "INVALID_CERTIFICATE" | "INVALID_CERTIFICATE_PATH";
@@ -48,7 +47,6 @@ export async function validateCertificatePath({
   if (trustAnchors.length === 0) {
     throw new TypeError("trustAnchors must contain at least one certificate");
   }
-  const trustedCerts = trustAnchors.map(certificateDer);
 
   if (certificateChain.length === 0) {
     return {
@@ -60,7 +58,7 @@ export async function validateCertificatePath({
 
   let certificates: Uint8Array[];
   try {
-    certificates = certificateChain.map(certificateDer);
+    certificates = certificateChain.map(certificateBytes);
   } catch {
     return {
       pathValid: false,
@@ -73,13 +71,12 @@ export async function validateCertificatePath({
     // Path validation only; revocation is handled separately.
     const result = await nativeValidateCertificatePath(
       certificates,
-      trustedCerts,
+      trustAnchors.map(certificateBytes),
       checkDate.getTime()
     );
     return {
       pathValid: true,
-      certificatePath: result.certificatePath,
-      trustAnchorFingerprint256: result.trustAnchorFingerprint256
+      ...result
     };
   } catch (error) {
     return {

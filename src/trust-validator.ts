@@ -1,10 +1,7 @@
 import { createCertificateRevocationChecker } from "./certificate-revocation.ts";
-import {
-  certificateDer,
-  getUriSubjectAlternativeNames,
-  validateCertificatePath
-} from "./certificates.ts";
+import { certificateBytes, validateCertificatePath } from "./certificates.ts";
 import { createHttpLoaders } from "./http-loaders.ts";
+import { createRevocationBatch } from "./revocation-batch.ts";
 import { createRevocationChecker } from "./revocation-checker.ts";
 import type {
   TrustValidator,
@@ -27,7 +24,10 @@ export function createTrustValidator({
   if (trustAnchors.length === 0) {
     throw new TypeError("trustAnchors must contain at least one certificate");
   }
-  const anchors = trustAnchors.map(certificateDer);
+  // Snapshot configuration in JS; certificate parsing belongs to the path worker.
+  const anchors = trustAnchors.map((input) =>
+    Uint8Array.from(certificateBytes(input))
+  );
   const defaults = createHttpLoaders(http);
   const crlLoader = loadCrl ?? defaults.loadCrl;
   const ocspLoader = loadOcsp ?? defaults.loadOcsp;
@@ -37,12 +37,6 @@ export function createTrustValidator({
     cacheKeyPrefix,
     now,
     onDiagnostic
-  });
-
-  const checkCertificateRevocation = createCertificateRevocationChecker({
-    loadCrl: crlLoader,
-    loadOcsp: ocspLoader,
-    checker
   });
 
   return {
@@ -59,33 +53,43 @@ export function createTrustValidator({
         return { valid: false, code: path.code, message: path.message };
       }
 
-      let leafUriSubjectAlternativeNames: string[];
-      try {
-        leafUriSubjectAlternativeNames = getUriSubjectAlternativeNames(
-          path.certificatePath[0]
-        );
-      } catch {
+      const batch = createRevocationBatch(
+        path.certificatePath,
+        path.revocationTargets.map((target) => target.certificateIndex),
+        now
+      );
+      const checkCertificateRevocation = createCertificateRevocationChecker({
+        loadCrl: crlLoader,
+        loadOcsp: ocspLoader,
+        checker,
+        batch
+      });
+      const results = await Promise.all(
+        path.revocationTargets.map(async (target) => {
+          try {
+            return await checkCertificateRevocation(
+              target,
+              path.certificatePath,
+              checkDate
+            );
+          } finally {
+            batch.complete(target.certificateIndex);
+          }
+        })
+      );
+      const revokedIndex = results.findIndex(
+        (result) => result.status === "revoked"
+      );
+      if (revokedIndex !== -1) {
         return {
           valid: false,
-          code: "INVALID_CERTIFICATE",
-          message: "Invalid leaf subject alternative name extension"
+          code: "CERTIFICATE_REVOKED",
+          message: "Certificate has been revoked",
+          certificateIndex: revokedIndex
         };
       }
-      for (let index = 0; index < path.certificatePath.length - 1; index++) {
-        const revocation = await checkCertificateRevocation(
-          path.certificatePath[index],
-          path.certificatePath[index + 1],
-          index,
-          checkDate
-        );
-        if (revocation.status === "revoked") {
-          return {
-            valid: false,
-            code: "CERTIFICATE_REVOKED",
-            message: "Certificate has been revoked",
-            certificateIndex: index
-          };
-        }
+      for (let index = 0; index < results.length; index++) {
+        const revocation = results[index];
         if (revocation.status === "unknown") {
           return {
             valid: false,
@@ -100,7 +104,7 @@ export function createTrustValidator({
         valid: true,
         certificatePath: path.certificatePath,
         trustAnchorFingerprint256: path.trustAnchorFingerprint256,
-        leafUriSubjectAlternativeNames
+        leafUriSubjectAlternativeNames: path.leafUriSubjectAlternativeNames
       };
     }
   };

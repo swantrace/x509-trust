@@ -2,7 +2,6 @@ import http from "node:http";
 import https from "node:https";
 import { isIP } from "node:net";
 import { isPublicAddress, parseHttpUrl, publicLookup } from "./http-policy.ts";
-import { nativeCreateOcspRequest } from "./native.ts";
 
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
@@ -11,6 +10,8 @@ export interface OcspLoadOptions {
   url: string;
   certificate: Uint8Array;
   issuerCertificate: Uint8Array;
+  /** Prepared by Rust with the validated path. Custom loaders may ignore it. */
+  request?: Uint8Array;
 }
 
 export interface HttpOptions {
@@ -124,13 +125,10 @@ export function createHttpLoaders({
     },
     async loadOcsp({
       url,
-      certificate,
-      issuerCertificate
+      request: body
     }: OcspLoadOptions): Promise<Uint8Array> {
-      return request(
-        url,
-        await nativeCreateOcspRequest(certificate, issuerCertificate)
-      );
+      if (!body) throw new Error("OCSP request DER is required");
+      return request(url, body);
     }
   };
 }

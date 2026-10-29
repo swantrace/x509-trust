@@ -105,7 +105,7 @@ test("public API supports OCSP callbacks with DER certificate and issuer context
   ]);
 });
 
-test("rejects a revoked client and stops before checking the intermediate", async () => {
+test("rejects a revoked client after checking the current parallel batch", async () => {
   let loads = 0;
   const validator = createTrustValidator({
     trustAnchors: [root],
@@ -122,7 +122,7 @@ test("rejects a revoked client and stops before checking the intermediate", asyn
   assert.equal(result.valid, false);
   assert.equal(result.code, "CERTIFICATE_REVOKED");
   assert.equal(result.certificateIndex, 0);
-  assert.equal(loads, 1);
+  assert.equal(loads, 2);
 });
 
 test("a good leaf status is insufficient when intermediate status cannot be established", async () => {
@@ -314,9 +314,11 @@ test("snapshots configured trust anchors and reports configuration errors early"
     true
   );
   assert.throws(() => createTrustValidator({ trustAnchors: [] }), TypeError);
-  assert.throws(() =>
-    createTrustValidator({ trustAnchors: ["invalid certificate"] })
-  );
+  const invalid = await createTrustValidator({
+    trustAnchors: ["invalid certificate"]
+  }).verify({ certificateChain: [leaf, intermediate] });
+  assert.equal(invalid.valid, false);
+  assert.equal(invalid.code, "INVALID_CERTIFICATE");
   await assert.rejects(
     validator.verify({
       certificateChain: [leaf, intermediate],

@@ -62,21 +62,22 @@ test("rejects malformed PEM envelopes, Base64, DER and decoded trailing bytes", 
     assert.throws(() => certificateDer(input), TypeError);
 });
 
-test("rejects malformed trust-anchor configuration before verification", () => {
-  assert.throws(
-    () =>
-      createTrustValidator({
-        trustAnchors: [Buffer.concat([der, Buffer.of(0)])]
-      }),
-    TypeError
-  );
-  assert.throws(
-    () =>
-      createTrustValidator({
-        trustAnchors: [
-          pem.replace("-----END CERTIFICATE-----", "-----END PRIVATE KEY-----")
-        ]
-      }),
-    TypeError
-  );
+test("rejects malformed trust anchors in the path worker before any loader runs", async () => {
+  for (const anchor of [
+    Buffer.concat([der, Buffer.of(0)]),
+    pem.replace("-----END CERTIFICATE-----", "-----END PRIVATE KEY-----")
+  ]) {
+    let loads = 0;
+    const validator = createTrustValidator({
+      trustAnchors: [anchor],
+      loadCrl: async () => {
+        loads++;
+        return der;
+      }
+    });
+    const result = await validator.verify({ certificateChain: [pem] });
+    assert.equal(result.valid, false);
+    assert.equal(result.code, "INVALID_CERTIFICATE");
+    assert.equal(loads, 0);
+  }
 });

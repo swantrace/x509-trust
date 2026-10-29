@@ -1,5 +1,7 @@
 import type {
   CrlFailureCode,
+  NativeCrlResult,
+  NativeOcspResult,
   OcspFailureCode,
   RevocationStatus
 } from "../native/index.js";
@@ -34,6 +36,10 @@ export async function validateCrl({
     crl,
     checkDate.getTime()
   );
+  return crlResult(result);
+}
+
+export function crlResult(result: NativeCrlResult): CrlValidationResult {
   if (result.status === "unknown") {
     if (!result.code || !result.message)
       throw new Error("Incomplete native CRL failure result");
@@ -78,6 +84,10 @@ export async function validateOcsp({
     response,
     checkDate.getTime()
   );
+  return ocspResult(result);
+}
+
+export function ocspResult(result: NativeOcspResult): OcspValidationResult {
   if (result.status === "unknown") {
     if (!result.code || !result.message)
       throw new Error("Incomplete native OCSP failure result");

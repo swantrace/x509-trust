@@ -19,6 +19,12 @@ trailing DER bytes. TypeScript reuses the generated native declarations for
 revocation statuses, error codes and native function signatures; its API types
 still describe JavaScript dates, callbacks and validation orchestration.
 
+Normal cold and cached verification each use two native API calls: path
+preparation (including SANs, revocation URLs and OCSP requests), then batch
+revocation validation. Fallbacks may require additional validation batches.
+Construction snapshots inputs in TypeScript without native calls; malformed
+trust-anchor certificates fail during `verify` before evidence retrieval.
+
 See [verification flow](docs/verification-flow.md) for the TypeScript module
 layout and the Rust entry and exit points used by `verify`.
 
@@ -83,6 +89,7 @@ interface OcspLoadOptions {
   url: string;
   certificate: Uint8Array;
   issuerCertificate: Uint8Array;
+  request?: Uint8Array;
 }
 
 interface HttpOptions {
@@ -181,8 +188,10 @@ issuer matching.
 
 Revocation failures include `certificateIndex`, the zero-based position in the
 validated path (`0` is the leaf). Use `code` for application decisions and
-`message` for diagnostic detail. Invalid validator configuration and invalid
-`checkDate` values throw errors.
+`message` for diagnostic detail. Invalid runtime options (such as an empty
+anchor list or invalid HTTP/cache settings) and invalid `checkDate` values throw
+errors. Malformed certificate or trust-anchor bytes produce a validation failure
+during `verify`.
 
 ## Validation policy and supported PKI
 
@@ -219,9 +228,14 @@ Points extensions are tried in this order:
 2. If an attempt fails or cannot establish status, try the next source,
    continuing with CRL addresses after OCSP addresses.
 3. The first authenticated, current `good` or `revoked` result ends the search
-   for that certificate. `revoked` fails validation immediately; `good` allows
-   validation to continue with the next certificate in the path.
+   for that certificate. `revoked` prevents success and further source attempts;
+   `good` completes that certificate's status check.
 4. If no source establishes status, return `REVOCATION_STATUS_UNKNOWN`.
+
+Different certificates load their current sources concurrently after path
+validation. Initial intermediate requests may already be in flight when a
+revoked leaf is discovered. Ready evidence is authenticated in batches; an
+authenticated revoked result takes precedence over unknown results in its batch.
 
 OCSP-first is this library's policy, not a UDAP requirement. It queries status
 for the individual certificate before falling back to downloading a CRL.
@@ -312,8 +326,9 @@ verification.
 
 Supply `loadCrl` or `loadOcsp` to retrieve evidence through your own transport or
 from offline storage. Callbacks return DER bytes; OCSP callbacks receive the
-target certificate and its issuer as DER bytes. The library still validates
-the returned evidence.
+target certificate and its issuer as DER bytes, plus `request` when Rust could
+prepare the OCSP request. Loaders can be invoked concurrently for different
+certificates. The library still validates the returned evidence.
 
 ```typescript
 const validator = createTrustValidator({

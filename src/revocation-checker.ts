@@ -19,20 +19,26 @@ import {
 
 const DEFAULT_MAX_CACHE_AGE_MS = 60 * 60 * 1000;
 
-interface RevocationCheckOptions {
+interface RevocationCheckOptions<
+  T extends RevocationResult = CrlValidationResult | OcspValidationResult
+> {
   certificate: Uint8Array;
   issuerCertificate: Uint8Array;
   source: string;
   load: () => Promise<Uint8Array>;
   checkDate?: Date;
   certificateIndex?: number;
+  validate?: (data: Uint8Array) => Promise<T>;
+  shouldStop?: () => boolean;
 }
 
 type RevocationResult =
   | { status: Exclude<`${RevocationStatus}`, "unknown">; nextUpdate: Date }
   | { status: "unknown"; code: string; message: string };
 
-function snapshot(options: RevocationCheckOptions): RevocationCheckOptions {
+function snapshot<T extends RevocationResult>(
+  options: RevocationCheckOptions<T>
+): RevocationCheckOptions<T> {
   return {
     ...options,
     certificate: Uint8Array.from(options.certificate),
@@ -79,7 +85,8 @@ export function createRevocationChecker({
     key: string,
     load: () => Promise<Uint8Array>,
     validate: (data: Uint8Array) => Promise<T>,
-    notify: RevocationReport
+    notify: RevocationReport,
+    shouldStop: () => boolean = () => false
   ): Promise<T> {
     const cached = await evidenceCache.read(key, notify);
     if (cached !== null) {
@@ -104,6 +111,7 @@ export function createRevocationChecker({
         message: "Cached evidence did not establish revocation status"
       });
       await evidenceCache.discard(key, notify);
+      if (shouldStop()) return result;
     } else {
       notify({ event: "cache_miss", message: "No usable cached evidence" });
     }
@@ -135,7 +143,7 @@ export function createRevocationChecker({
 
   return {
     async checkCrl(
-      options: RevocationCheckOptions
+      options: RevocationCheckOptions<CrlValidationResult>
     ): Promise<CrlValidationResult> {
       options = snapshot(options);
       const checkDate = options.checkDate;
@@ -144,23 +152,25 @@ export function createRevocationChecker({
       return check(
         cacheKey("crl", options),
         options.load,
-        (crl) =>
-          validateCrl({
-            certificate: options.certificate,
-            issuerCertificate: options.issuerCertificate,
-            crl,
-            checkDate: checkDate ?? new Date(now())
-          }),
+        options.validate ??
+          ((crl) =>
+            validateCrl({
+              certificate: options.certificate,
+              issuerCertificate: options.issuerCertificate,
+              crl,
+              checkDate: checkDate ?? new Date(now())
+            })),
         (event) =>
           report({
             ...event,
             mechanism: "crl",
             certificateIndex: options.certificateIndex
-          })
+          }),
+        options.shouldStop
       );
     },
     async checkOcsp(
-      options: RevocationCheckOptions
+      options: RevocationCheckOptions<OcspValidationResult>
     ): Promise<OcspValidationResult> {
       options = snapshot(options);
       const checkDate = options.checkDate;
@@ -169,19 +179,21 @@ export function createRevocationChecker({
       return check(
         cacheKey("ocsp", options),
         options.load,
-        (response) =>
-          validateOcsp({
-            certificate: options.certificate,
-            issuerCertificate: options.issuerCertificate,
-            response,
-            checkDate: checkDate ?? new Date(now())
-          }),
+        options.validate ??
+          ((response) =>
+            validateOcsp({
+              certificate: options.certificate,
+              issuerCertificate: options.issuerCertificate,
+              response,
+              checkDate: checkDate ?? new Date(now())
+            })),
         (event) =>
           report({
             ...event,
             mechanism: "ocsp",
             certificateIndex: options.certificateIndex
-          })
+          }),
+        options.shouldStop
       );
     }
   };

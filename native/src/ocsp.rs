@@ -187,169 +187,172 @@ pub struct ValidateOcspTask {
     check_date_ms: f64,
 }
 
-impl ValidateOcspTask {
-    fn validate(&self) -> NativeOcspResult {
-        use OcspFailureCode::*;
-        let certificate = match parse_certificate(&self.certificate) {
-            Ok(certificate) => certificate,
-            Err(_) => return unknown(InvalidOcspResponse, "Unable to parse the DER certificate"),
-        };
-        let issuer = match parse_certificate(&self.issuer) {
-            Ok(issuer) => issuer,
-            Err(_) => return unknown(OcspIssuerMismatch, "Unable to parse the DER issuer"),
-        };
-        if !names_equal(certificate.issuer(), issuer.subject()) {
-            return unknown(
-                OcspIssuerMismatch,
-                "Certificate does not have the supplied issuer",
-            );
-        }
-        let outer = match OcspResponse::from_der(&self.response) {
-            Ok(outer) => outer,
-            Err(_) => return unknown(InvalidOcspResponse, "Unable to parse the DER OCSP response"),
-        };
-        if outer.response_status != OcspResponseStatus::Successful {
-            return unknown(
-                OcspResponderError,
-                "OCSP responder did not return a successful response",
-            );
-        }
-        let Some(bytes) = outer.response_bytes else {
-            return unknown(InvalidOcspResponse, "OCSP response has no response bytes");
-        };
-        if bytes.response_type != BASIC_OCSP {
-            return unknown(
-                UnsupportedOcspResponse,
-                "Only BasicOCSPResponse is supported",
-            );
-        }
-        let (signed_data, version) = match signed_response_data(bytes.response.as_bytes()) {
-            Ok(data) => data,
-            Err(_) => return unknown(InvalidOcspResponse, "Invalid OCSP response data"),
-        };
-        if version != 0 {
-            return unknown(UnsupportedOcspResponse, "Unsupported OCSP response version");
-        }
-        let basic = match BasicOcspResponse::from_der(bytes.response.as_bytes()) {
-            Ok(basic) => basic,
-            Err(_) => return unknown(InvalidOcspResponse, "Unable to parse the BasicOCSPResponse"),
-        };
-        let mut matches = Vec::new();
-        for single in &basic.tbs_response_data.responses {
-            match matches_certificate(&single.cert_id, &certificate, &issuer) {
-                Some(true) => matches.push(single),
-                Some(false) => (),
-                None => {
-                    return unknown(
-                        InvalidOcspResponse,
-                        "Invalid or unsupported CertID hash algorithm",
-                    )
-                }
+pub(crate) fn validate(
+    certificate_der: &[u8],
+    issuer_der: &[u8],
+    response_der: &[u8],
+    check_date_ms: f64,
+) -> NativeOcspResult {
+    use OcspFailureCode::*;
+    let certificate = match parse_certificate(certificate_der) {
+        Ok(certificate) => certificate,
+        Err(_) => return unknown(InvalidOcspResponse, "Unable to parse the DER certificate"),
+    };
+    let issuer = match parse_certificate(issuer_der) {
+        Ok(issuer) => issuer,
+        Err(_) => return unknown(OcspIssuerMismatch, "Unable to parse the DER issuer"),
+    };
+    if !names_equal(certificate.issuer(), issuer.subject()) {
+        return unknown(
+            OcspIssuerMismatch,
+            "Certificate does not have the supplied issuer",
+        );
+    }
+    let outer = match OcspResponse::from_der(response_der) {
+        Ok(outer) => outer,
+        Err(_) => return unknown(InvalidOcspResponse, "Unable to parse the DER OCSP response"),
+    };
+    if outer.response_status != OcspResponseStatus::Successful {
+        return unknown(
+            OcspResponderError,
+            "OCSP responder did not return a successful response",
+        );
+    }
+    let Some(bytes) = outer.response_bytes else {
+        return unknown(InvalidOcspResponse, "OCSP response has no response bytes");
+    };
+    if bytes.response_type != BASIC_OCSP {
+        return unknown(
+            UnsupportedOcspResponse,
+            "Only BasicOCSPResponse is supported",
+        );
+    }
+    let (signed_data, version) = match signed_response_data(bytes.response.as_bytes()) {
+        Ok(data) => data,
+        Err(_) => return unknown(InvalidOcspResponse, "Invalid OCSP response data"),
+    };
+    if version != 0 {
+        return unknown(UnsupportedOcspResponse, "Unsupported OCSP response version");
+    }
+    let basic = match BasicOcspResponse::from_der(bytes.response.as_bytes()) {
+        Ok(basic) => basic,
+        Err(_) => return unknown(InvalidOcspResponse, "Unable to parse the BasicOCSPResponse"),
+    };
+    let mut matches = Vec::new();
+    for single in &basic.tbs_response_data.responses {
+        match matches_certificate(&single.cert_id, &certificate, &issuer) {
+            Some(true) => matches.push(single),
+            Some(false) => (),
+            None => {
+                return unknown(
+                    InvalidOcspResponse,
+                    "Invalid or unsupported CertID hash algorithm",
+                )
             }
         }
-        if matches.len() != 1 {
-            return unknown(
-                OcspCertificateMismatch,
-                "OCSP response must contain exactly one matching certificate status",
-            );
-        }
-        let single = matches[0];
-        if basic
-            .tbs_response_data
-            .response_extensions
+    }
+    if matches.len() != 1 {
+        return unknown(
+            OcspCertificateMismatch,
+            "OCSP response must contain exactly one matching certificate status",
+        );
+    }
+    let single = matches[0];
+    if basic
+        .tbs_response_data
+        .response_extensions
+        .iter()
+        .flatten()
+        .any(|extension| extension.critical)
+        || single
+            .single_extensions
             .iter()
             .flatten()
             .any(|extension| extension.critical)
-            || single
-                .single_extensions
-                .iter()
-                .flatten()
-                .any(|extension| extension.critical)
-        {
+    {
+        return unknown(
+            UnsupportedOcspResponse,
+            "Unsupported critical OCSP extension",
+        );
+    }
+    let Some(next_update) = single.next_update else {
+        return unknown(
+            OcspMissingNextUpdate,
+            "This verifier requires nextUpdate to bound response freshness",
+        );
+    };
+    let produced_at_ms = basic
+        .tbs_response_data
+        .produced_at
+        .0
+        .to_unix_duration()
+        .as_secs_f64()
+        * 1000.0;
+    let this_update_ms = single.this_update.0.to_unix_duration().as_secs_f64() * 1000.0;
+    let next_update_ms = next_update.0.to_unix_duration().as_secs_f64() * 1000.0;
+    if next_update_ms <= this_update_ms {
+        return unknown(InvalidOcspResponse, "Invalid OCSP response time interval");
+    }
+    if produced_at_ms > check_date_ms || this_update_ms > check_date_ms {
+        return unknown(
+            OcspNotYetValid,
+            "OCSP response was produced or updated in the future",
+        );
+    }
+    if next_update_ms <= check_date_ms {
+        return unknown(OcspExpired, "OCSP nextUpdate has been reached");
+    }
+    // Embedded certificates never establish trust. Delegation is not supported.
+    if !responder_is_issuer(&basic.tbs_response_data.responder_id, &issuer) {
+        return unknown(
+            OcspResponderVerificationFailed,
+            "Unable to authenticate a direct-issuer OCSP response",
+        );
+    }
+    let Some(signature) = basic.signature.as_bytes() else {
+        return unknown(InvalidOcspSignature, "OCSP signature must be byte-aligned");
+    };
+    if !supported_signature_parameters(&basic.signature_algorithm) {
+        return unknown(
+            InvalidOcspSignature,
+            "Unsupported OCSP signature algorithm parameters",
+        );
+    }
+    let Ok(algorithm_der) = basic.signature_algorithm.to_der() else {
+        return unknown(InvalidOcspSignature, "Invalid OCSP signature algorithm");
+    };
+    let Ok(([], algorithm)) = AlgorithmIdentifier::from_der(&algorithm_der) else {
+        return unknown(InvalidOcspSignature, "Invalid OCSP signature algorithm");
+    };
+    if x509_parser::verify::verify_signature(
+        issuer.public_key(),
+        &algorithm,
+        &BitString::new(0, signature),
+        signed_data,
+    )
+    .is_err()
+    {
+        return unknown(
+            InvalidOcspSignature,
+            "OCSP signature is invalid or unsupported",
+        );
+    }
+    let status = match single.cert_status {
+        CertStatus::Good(_) => RevocationStatus::Good,
+        CertStatus::Revoked(_) => RevocationStatus::Revoked,
+        CertStatus::Unknown(_) => {
             return unknown(
-                UnsupportedOcspResponse,
-                "Unsupported critical OCSP extension",
-            );
+                OcspStatusUnknown,
+                "OCSP responder reports unknown certificate status",
+            )
         }
-        let Some(next_update) = single.next_update else {
-            return unknown(
-                OcspMissingNextUpdate,
-                "This verifier requires nextUpdate to bound response freshness",
-            );
-        };
-        let produced_at_ms = basic
-            .tbs_response_data
-            .produced_at
-            .0
-            .to_unix_duration()
-            .as_secs_f64()
-            * 1000.0;
-        let this_update_ms = single.this_update.0.to_unix_duration().as_secs_f64() * 1000.0;
-        let next_update_ms = next_update.0.to_unix_duration().as_secs_f64() * 1000.0;
-        if next_update_ms <= this_update_ms {
-            return unknown(InvalidOcspResponse, "Invalid OCSP response time interval");
-        }
-        if produced_at_ms > self.check_date_ms || this_update_ms > self.check_date_ms {
-            return unknown(
-                OcspNotYetValid,
-                "OCSP response was produced or updated in the future",
-            );
-        }
-        if next_update_ms <= self.check_date_ms {
-            return unknown(OcspExpired, "OCSP nextUpdate has been reached");
-        }
-        // Embedded certificates never establish trust. Delegation is not supported.
-        if !responder_is_issuer(&basic.tbs_response_data.responder_id, &issuer) {
-            return unknown(
-                OcspResponderVerificationFailed,
-                "Unable to authenticate a direct-issuer OCSP response",
-            );
-        }
-        let Some(signature) = basic.signature.as_bytes() else {
-            return unknown(InvalidOcspSignature, "OCSP signature must be byte-aligned");
-        };
-        if !supported_signature_parameters(&basic.signature_algorithm) {
-            return unknown(
-                InvalidOcspSignature,
-                "Unsupported OCSP signature algorithm parameters",
-            );
-        }
-        let Ok(algorithm_der) = basic.signature_algorithm.to_der() else {
-            return unknown(InvalidOcspSignature, "Invalid OCSP signature algorithm");
-        };
-        let Ok(([], algorithm)) = AlgorithmIdentifier::from_der(&algorithm_der) else {
-            return unknown(InvalidOcspSignature, "Invalid OCSP signature algorithm");
-        };
-        if x509_parser::verify::verify_signature(
-            issuer.public_key(),
-            &algorithm,
-            &BitString::new(0, signature),
-            signed_data,
-        )
-        .is_err()
-        {
-            return unknown(
-                InvalidOcspSignature,
-                "OCSP signature is invalid or unsupported",
-            );
-        }
-        let status = match single.cert_status {
-            CertStatus::Good(_) => RevocationStatus::Good,
-            CertStatus::Revoked(_) => RevocationStatus::Revoked,
-            CertStatus::Unknown(_) => {
-                return unknown(
-                    OcspStatusUnknown,
-                    "OCSP responder reports unknown certificate status",
-                )
-            }
-        };
-        NativeOcspResult {
-            status,
-            this_update_ms: Some(this_update_ms),
-            next_update_ms: Some(next_update_ms),
-            code: None,
-            message: None,
-        }
+    };
+    NativeOcspResult {
+        status,
+        this_update_ms: Some(this_update_ms),
+        next_update_ms: Some(next_update_ms),
+        code: None,
+        message: None,
     }
 }
 
@@ -362,7 +365,12 @@ impl Task for ValidateOcspTask {
         if !self.check_date_ms.is_finite() {
             return Err(invalid("checkDate must be a valid date"));
         }
-        Ok(self.validate())
+        Ok(validate(
+            &self.certificate,
+            &self.issuer,
+            &self.response,
+            self.check_date_ms,
+        ))
     }
 
     fn resolve(&mut self, _: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -391,50 +399,48 @@ pub struct CreateOcspRequestTask {
     issuer: Vec<u8>,
 }
 
-impl CreateOcspRequestTask {
-    fn encode(&self) -> Result<Vec<u8>> {
-        let certificate = parse_certificate(&self.certificate)?;
-        let issuer = parse_certificate(&self.issuer)?;
-        if !names_equal(certificate.issuer(), issuer.subject()) {
-            return Err(invalid("Certificate does not have the supplied issuer"));
-        }
-        let encode = || -> der::Result<Vec<u8>> {
-            OcspRequest {
-                tbs_request: TbsRequest {
-                    request_list: vec![Request {
-                        req_cert: CertId {
-                            hash_algorithm: AlgorithmIdentifierOwned {
-                                oid: SHA1,
-                                parameters: Some(Null.into()),
-                            },
-                            issuer_name_hash: OctetString::new(
-                                digest::digest(
-                                    &digest::SHA1_FOR_LEGACY_USE_ONLY,
-                                    issuer.subject().as_raw(),
-                                )
-                                .as_ref(),
-                            )?,
-                            issuer_key_hash: OctetString::new(
-                                digest::digest(
-                                    &digest::SHA1_FOR_LEGACY_USE_ONLY,
-                                    &issuer.public_key().subject_public_key.data,
-                                )
-                                .as_ref(),
-                            )?,
-                            serial_number: SerialNumber::from_der(
-                                &IntRef::new(certificate.raw_serial())?.to_der()?,
-                            )?,
-                        },
-                        single_request_extensions: None,
-                    }],
-                    ..TbsRequest::default()
-                },
-                optional_signature: None,
-            }
-            .to_der()
-        };
-        encode().map_err(|_| invalid("Unable to encode the DER OCSP request"))
+pub(crate) fn build_request(certificate_der: &[u8], issuer_der: &[u8]) -> Result<Vec<u8>> {
+    let certificate = parse_certificate(certificate_der)?;
+    let issuer = parse_certificate(issuer_der)?;
+    if !names_equal(certificate.issuer(), issuer.subject()) {
+        return Err(invalid("Certificate does not have the supplied issuer"));
     }
+    let encode = || -> der::Result<Vec<u8>> {
+        OcspRequest {
+            tbs_request: TbsRequest {
+                request_list: vec![Request {
+                    req_cert: CertId {
+                        hash_algorithm: AlgorithmIdentifierOwned {
+                            oid: SHA1,
+                            parameters: Some(Null.into()),
+                        },
+                        issuer_name_hash: OctetString::new(
+                            digest::digest(
+                                &digest::SHA1_FOR_LEGACY_USE_ONLY,
+                                issuer.subject().as_raw(),
+                            )
+                            .as_ref(),
+                        )?,
+                        issuer_key_hash: OctetString::new(
+                            digest::digest(
+                                &digest::SHA1_FOR_LEGACY_USE_ONLY,
+                                &issuer.public_key().subject_public_key.data,
+                            )
+                            .as_ref(),
+                        )?,
+                        serial_number: SerialNumber::from_der(
+                            &IntRef::new(certificate.raw_serial())?.to_der()?,
+                        )?,
+                    },
+                    single_request_extensions: None,
+                }],
+                ..TbsRequest::default()
+            },
+            optional_signature: None,
+        }
+        .to_der()
+    };
+    encode().map_err(|_| invalid("Unable to encode the DER OCSP request"))
 }
 
 #[napi]
@@ -443,7 +449,7 @@ impl Task for CreateOcspRequestTask {
     type JsValue = Uint8Array;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        self.encode()
+        build_request(&self.certificate, &self.issuer)
     }
 
     fn resolve(&mut self, _: Env, output: Self::Output) -> Result<Self::JsValue> {

@@ -9,7 +9,10 @@ use x509_parser::oid_registry::{
     OID_X509_EXT_INHIBIT_ANY_POLICY, OID_X509_EXT_POLICY_CONSTRAINTS, OID_X509_EXT_POLICY_MAPPINGS,
 };
 
-use crate::parse_certificate;
+use crate::{
+    decode_certificate, get_revocation_endpoints, get_uri_subject_alternative_names, ocsp,
+    parse_certificate,
+};
 
 // This API validates trust without imposing an application-specific EKU.
 // Consume every OID so malformed EKU data is still rejected.
@@ -81,12 +84,31 @@ pub struct NativeValidatedPath {
     pub certificate_path: Vec<Uint8Array>,
     pub trust_anchor_index: u32,
     pub trust_anchor_fingerprint256: String,
+    pub leaf_uri_subject_alternative_names: Vec<String>,
+    pub revocation_targets: Vec<NativeRevocationTarget>,
+}
+
+#[napi(object)]
+pub struct NativeRevocationTarget {
+    pub certificate_index: u32,
+    pub crl_urls: Vec<String>,
+    pub ocsp_urls: Vec<String>,
+    pub ocsp_request: Option<Uint8Array>,
+}
+
+struct RevocationTarget {
+    certificate_index: u32,
+    crl_urls: Vec<String>,
+    ocsp_urls: Vec<String>,
+    ocsp_request: Option<Vec<u8>>,
 }
 
 pub struct ValidatedPath {
     certificates: Vec<Vec<u8>>,
     anchor_index: u32,
     anchor_fingerprint256: String,
+    leaf_uris: Vec<String>,
+    targets: Vec<RevocationTarget>,
 }
 
 pub struct ValidatePathTask {
@@ -114,11 +136,17 @@ impl Task for ValidatePathTask {
                 "Certificates and trust anchors are required",
             ));
         }
-        // Parse all supplied certificates, including unused candidates, to keep
-        // malformed input distinct from a well-formed but untrusted path.
-        for der in self.chain.iter().chain(&self.anchors) {
-            parse_certificate(der)?;
-        }
+        // Decode and check every candidate within this worker, including unused ones.
+        self.chain = self
+            .chain
+            .iter()
+            .map(|input| decode_certificate(input))
+            .collect::<Result<_>>()?;
+        self.anchors = self
+            .anchors
+            .iter()
+            .map(|input| decode_certificate(input))
+            .collect::<Result<_>>()?;
         let chain: Vec<_> = self
             .chain
             .iter()
@@ -171,8 +199,30 @@ impl Task for ValidatePathTask {
                 .map(|cert| cert.der().as_ref().to_vec()),
         );
         certificates.push(self.anchors[anchor_index].clone());
+        let leaf_uris = get_uri_subject_alternative_names(&certificates[0])?;
+        let targets = certificates
+            .windows(2)
+            .enumerate()
+            .map(|(index, pair)| {
+                let endpoints = get_revocation_endpoints(&pair[0])?;
+                let request = if endpoints.ocsp_urls.is_empty() {
+                    None
+                } else {
+                    // Encoding failures must still allow CRL/custom-loader fallback.
+                    ocsp::build_request(&pair[0], &pair[1]).ok()
+                };
+                Ok(RevocationTarget {
+                    certificate_index: index as u32,
+                    crl_urls: endpoints.crl_urls,
+                    ocsp_urls: endpoints.ocsp_urls,
+                    ocsp_request: request,
+                })
+            })
+            .collect::<Result<_>>()?;
         Ok(ValidatedPath {
             certificates,
+            leaf_uris,
+            targets,
             anchor_index: anchor_index as u32,
             anchor_fingerprint256: ring::digest::digest(
                 &ring::digest::SHA256,
@@ -195,6 +245,17 @@ impl Task for ValidatePathTask {
                 .collect(),
             trust_anchor_index: output.anchor_index,
             trust_anchor_fingerprint256: output.anchor_fingerprint256,
+            leaf_uri_subject_alternative_names: output.leaf_uris,
+            revocation_targets: output
+                .targets
+                .into_iter()
+                .map(|target| NativeRevocationTarget {
+                    certificate_index: target.certificate_index,
+                    crl_urls: target.crl_urls,
+                    ocsp_urls: target.ocsp_urls,
+                    ocsp_request: target.ocsp_request.map(Uint8Array::from),
+                })
+                .collect(),
         })
     }
 }
