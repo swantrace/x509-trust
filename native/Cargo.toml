@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 [dependencies]
 napi = { version = "3", default-features = false, features = ["napi4", "dyn-symbols"] }
 napi-derive = "3"
+x509-parser = { version = "0.18.1", features = ["verify"] }
 
 [build-dependencies]
 napi-build = "2"
