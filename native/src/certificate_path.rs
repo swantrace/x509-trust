@@ -80,11 +80,13 @@ fn check_certificate(
 pub struct NativeValidatedPath {
     pub certificate_path: Vec<Uint8Array>,
     pub trust_anchor_index: u32,
+    pub trust_anchor_fingerprint256: String,
 }
 
 pub struct ValidatedPath {
     certificates: Vec<Vec<u8>>,
     anchor_index: u32,
+    anchor_fingerprint256: String,
 }
 
 pub struct ValidatePathTask {
@@ -172,6 +174,15 @@ impl Task for ValidatePathTask {
         Ok(ValidatedPath {
             certificates,
             anchor_index: anchor_index as u32,
+            anchor_fingerprint256: ring::digest::digest(
+                &ring::digest::SHA256,
+                &self.anchors[anchor_index],
+            )
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect::<Vec<_>>()
+            .join(":"),
         })
     }
 
@@ -183,6 +194,7 @@ impl Task for ValidatePathTask {
                 .map(Uint8Array::from)
                 .collect(),
             trust_anchor_index: output.anchor_index,
+            trust_anchor_fingerprint256: output.anchor_fingerprint256,
         })
     }
 }

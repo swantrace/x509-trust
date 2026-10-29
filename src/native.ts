@@ -1,45 +1,25 @@
 import { createRequire } from "node:module";
+import type { RevocationEndpoints } from "../native/index.js";
 
 const binding: typeof import("../native/index.js") = createRequire(
   import.meta.url
 )("../native/index.node");
 
-export function nativeValidateCertificatePath(
-  chain: Uint8Array[],
-  anchors: Uint8Array[],
-  checkDateMs: number
-) {
-  return binding.validateCertificatePath(chain, anchors, checkDateMs);
-}
+// Keep native signatures and result types sourced from the generated declarations.
+export const nativeValidateCertificatePath = binding.validateCertificatePath;
+export const nativeValidateCrl = binding.validateCrl;
+export const nativeCreateOcspRequest = binding.createOcspRequest;
+export const nativeValidateOcsp = binding.validateOcsp;
 
-export function nativeValidateCrl(
-  certificate: Uint8Array,
-  issuerCertificate: Uint8Array,
-  crl: Uint8Array,
-  checkDateMs: number
-) {
-  return binding.validateCrl(certificate, issuerCertificate, crl, checkDateMs);
-}
-
-export function nativeCreateOcspRequest(
-  certificate: Uint8Array,
-  issuerCertificate: Uint8Array
-) {
-  return binding.createOcspRequest(certificate, issuerCertificate);
-}
-
-export function nativeValidateOcsp(
-  certificate: Uint8Array,
-  issuerCertificate: Uint8Array,
-  response: Uint8Array,
-  checkDateMs: number
-) {
-  return binding.validateOcsp(
-    certificate,
-    issuerCertificate,
-    response,
-    checkDateMs
-  );
+export function nativeCertificateDer(input: Uint8Array): Uint8Array {
+  try {
+    return binding.certificateDer(input);
+  } catch (cause) {
+    throw new TypeError(
+      cause instanceof Error ? cause.message : "Invalid certificate",
+      { cause }
+    );
+  }
 }
 
 export function nativeUriSubjectAlternativeNames(der: Uint8Array): string[] {
@@ -53,10 +33,9 @@ export function nativeUriSubjectAlternativeNames(der: Uint8Array): string[] {
   }
 }
 
-export function nativeRevocationEndpoints(der: Uint8Array): {
-  crlUrls: string[];
-  ocspUrls: string[];
-} {
+export function nativeRevocationEndpoints(
+  der: Uint8Array
+): RevocationEndpoints {
   try {
     return binding.getRevocationEndpoints(der);
   } catch (cause) {

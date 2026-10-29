@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { X509Certificate } from "node:crypto";
 import { test } from "node:test";
 import { BitString, Integer, Utf8String } from "asn1js";
 import {
@@ -381,6 +382,11 @@ test("native certificate path policy with independently signed certificates", as
       );
       for (const der of [...chain, ...anchors]) der.fill(0);
       const result = await pending;
+      assert.equal(result.trustAnchorIndex, 0);
+      assert.equal(
+        result.trustAnchorFingerprint256,
+        new X509Certificate(root.der).fingerprint256
+      );
       assert.deepEqual(result.certificatePath, [
         leaf.der,
         intermediate.der,

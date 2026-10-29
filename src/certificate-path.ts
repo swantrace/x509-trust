@@ -1,4 +1,3 @@
-import { X509Certificate } from "node:crypto";
 import { type CertificateInput, certificateDer } from "./certificate-input.ts";
 import { nativeValidateCertificatePath } from "./native.ts";
 
@@ -34,9 +33,7 @@ export async function validateCertificatePath({
   if (trustAnchors.length === 0) {
     throw new TypeError("trustAnchors must contain at least one certificate");
   }
-  const trustedCerts = trustAnchors.map(
-    (input) => new X509Certificate(input).raw
-  );
+  const trustedCerts = trustAnchors.map(certificateDer);
 
   if (certificateChain.length === 0) {
     return {
@@ -64,13 +61,10 @@ export async function validateCertificatePath({
       trustedCerts,
       checkDate.getTime()
     );
-    const trustAnchor = new X509Certificate(
-      trustedCerts[result.trustAnchorIndex]
-    );
     return {
       pathValid: true,
       certificatePath: result.certificatePath,
-      trustAnchorFingerprint256: trustAnchor.fingerprint256
+      trustAnchorFingerprint256: result.trustAnchorFingerprint256
     };
   } catch (error) {
     return {

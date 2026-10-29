@@ -1,5 +1,6 @@
-import { X509Certificate } from "node:crypto";
+import type { RevocationStatus } from "../native/index.js";
 import type { CacheStore } from "./cache.ts";
+import { certificateDer } from "./certificate-input.ts";
 import { getUriSubjectAlternativeNames } from "./certificate-names.ts";
 import {
   type CertificateInput,
@@ -58,7 +59,7 @@ export interface TrustValidator {
 }
 
 type CertificateRevocation =
-  | { status: "good" | "revoked" }
+  | { status: Exclude<`${RevocationStatus}`, "unknown"> }
   | { status: "unknown"; message: string };
 
 export function createTrustValidator({
@@ -75,7 +76,7 @@ export function createTrustValidator({
   if (trustAnchors.length === 0) {
     throw new TypeError("trustAnchors must contain at least one certificate");
   }
-  const anchors = trustAnchors.map((input) => new X509Certificate(input).raw);
+  const anchors = trustAnchors.map(certificateDer);
   const defaults = createHttpLoaders(http);
   const crlLoader = loadCrl ?? defaults.loadCrl;
   const ocspLoader = loadOcsp ?? defaults.loadOcsp;

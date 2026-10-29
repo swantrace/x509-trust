@@ -1,3 +1,5 @@
+import type { RevocationStatus } from "../native/index.js";
+
 export interface DiagnosticEvent {
   event:
     | "cache_hit"
@@ -9,7 +11,7 @@ export interface DiagnosticEvent {
   mechanism: "crl" | "ocsp";
   certificateIndex?: number;
   code?: string;
-  status?: "good" | "revoked" | "unknown";
+  status?: `${RevocationStatus}`;
   message: string;
 }
 

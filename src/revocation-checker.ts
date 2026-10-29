@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { RevocationStatus } from "../native/index.js";
 import { type CacheStore, createMemoryCache } from "./cache.ts";
 import { type CrlValidationResult, validateCrl } from "./crl.ts";
 import {
@@ -20,7 +21,7 @@ interface RevocationCheckOptions {
 }
 
 type RevocationResult =
-  | { status: "good" | "revoked"; nextUpdate: Date }
+  | { status: Exclude<`${RevocationStatus}`, "unknown">; nextUpdate: Date }
   | { status: "unknown"; code: string; message: string };
 
 function snapshot(options: RevocationCheckOptions): RevocationCheckOptions {

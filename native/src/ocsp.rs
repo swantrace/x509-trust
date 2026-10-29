@@ -12,17 +12,10 @@ use x509_ocsp::{
 use x509_parser::asn1_rs::BitString;
 use x509_parser::prelude::*;
 
-use crate::{crl::names_equal, invalid, parse_certificate};
+use crate::{crl::names_equal, invalid, parse_certificate, RevocationStatus};
 
 const SHA1: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.14.3.2.26");
 const BASIC_OCSP: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.48.1.1");
-
-#[napi(string_enum = "lowercase")]
-pub enum OcspStatus {
-    Good,
-    Revoked,
-    Unknown,
-}
 
 #[napi(string_enum = "UPPER_SNAKE")]
 pub enum OcspFailureCode {
@@ -41,7 +34,7 @@ pub enum OcspFailureCode {
 
 #[napi(object)]
 pub struct NativeOcspResult {
-    pub status: OcspStatus,
+    pub status: RevocationStatus,
     pub this_update_ms: Option<f64>,
     pub next_update_ms: Option<f64>,
     pub code: Option<OcspFailureCode>,
@@ -50,7 +43,7 @@ pub struct NativeOcspResult {
 
 fn unknown(code: OcspFailureCode, message: &str) -> NativeOcspResult {
     NativeOcspResult {
-        status: OcspStatus::Unknown,
+        status: RevocationStatus::Unknown,
         this_update_ms: None,
         next_update_ms: None,
         code: Some(code),
@@ -341,8 +334,8 @@ impl ValidateOcspTask {
             );
         }
         let status = match single.cert_status {
-            CertStatus::Good(_) => OcspStatus::Good,
-            CertStatus::Revoked(_) => OcspStatus::Revoked,
+            CertStatus::Good(_) => RevocationStatus::Good,
+            CertStatus::Revoked(_) => RevocationStatus::Revoked,
             CertStatus::Unknown(_) => {
                 return unknown(
                     OcspStatusUnknown,

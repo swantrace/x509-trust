@@ -8,14 +8,7 @@ use x509_parser::oid_registry::{
 };
 use x509_parser::prelude::*;
 
-use crate::{invalid, parse_certificate};
-
-#[napi(string_enum = "lowercase")]
-pub enum CrlStatus {
-    Good,
-    Revoked,
-    Unknown,
-}
+use crate::{invalid, parse_certificate, RevocationStatus};
 
 #[napi(string_enum = "UPPER_SNAKE")]
 pub enum CrlFailureCode {
@@ -39,7 +32,7 @@ pub enum CrlFailureCode {
 
 #[napi(object)]
 pub struct NativeCrlResult {
-    pub status: CrlStatus,
+    pub status: RevocationStatus,
     pub this_update_ms: Option<f64>,
     pub next_update_ms: Option<f64>,
     pub code: Option<CrlFailureCode>,
@@ -48,7 +41,7 @@ pub struct NativeCrlResult {
 
 fn unknown(code: CrlFailureCode, message: &str) -> NativeCrlResult {
     NativeCrlResult {
-        status: CrlStatus::Unknown,
+        status: RevocationStatus::Unknown,
         this_update_ms: None,
         next_update_ms: None,
         code: Some(code),
@@ -245,9 +238,9 @@ impl Task for ValidateCrlTask {
             .any(|entry| entry.serial() == &certificate.serial);
         Ok(NativeCrlResult {
             status: if revoked {
-                CrlStatus::Revoked
+                RevocationStatus::Revoked
             } else {
-                CrlStatus::Good
+                RevocationStatus::Good
             },
             this_update_ms: Some(this_update_ms),
             next_update_ms: Some(next_update_ms),

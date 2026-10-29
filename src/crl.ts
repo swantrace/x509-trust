@@ -1,18 +1,13 @@
+import type { CrlFailureCode, RevocationStatus } from "../native/index.js";
 import { nativeValidateCrl } from "./native.ts";
 
-type CrlFailureCode =
-  | "INVALID_CRL"
-  | "CRL_ISSUER_MISMATCH"
-  | "CRL_ISSUER_NOT_AUTHORIZED"
-  | "INVALID_CRL_SIGNATURE"
-  | "CRL_NOT_YET_VALID"
-  | "CRL_EXPIRED"
-  | "CRL_MISSING_NEXT_UPDATE"
-  | "UNSUPPORTED_CRL";
-
 export type CrlValidationResult =
-  | { status: "good" | "revoked"; thisUpdate: Date; nextUpdate: Date }
-  | { status: "unknown"; code: CrlFailureCode; message: string };
+  | {
+      status: Exclude<`${RevocationStatus}`, "unknown">;
+      thisUpdate: Date;
+      nextUpdate: Date;
+    }
+  | { status: "unknown"; code: `${CrlFailureCode}`; message: string };
 
 // Certificate and issuer must belong to a previously validated certificate path.
 export async function validateCrl({

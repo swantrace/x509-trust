@@ -1,3 +1,4 @@
+use napi::bindgen_prelude::Uint8Array;
 use napi::{Error, Result, Status};
 use napi_derive::napi;
 use x509_parser::oid_registry::{
@@ -13,6 +14,13 @@ mod certificate_path;
 mod crl;
 #[cfg_attr(test, allow(dead_code))]
 mod ocsp;
+
+#[napi(string_enum = "lowercase")]
+pub enum RevocationStatus {
+    Good,
+    Revoked,
+    Unknown,
+}
 
 /// Minimal native entry point used to verify the mixed Rust/TypeScript setup.
 #[napi]
@@ -31,6 +39,41 @@ fn parse_certificate(der: &[u8]) -> Result<X509Certificate<'_>> {
         return Err(invalid("Unexpected bytes after the DER certificate"));
     }
     Ok(certificate)
+}
+
+/// Decode one PEM or DER certificate and return an independent DER snapshot.
+#[napi]
+pub fn certificate_der(input: &[u8]) -> Result<Uint8Array> {
+    let der = if input.first() == Some(&0x30) {
+        input.to_vec()
+    } else {
+        let (remaining, pem) = x509_parser::pem::parse_x509_pem(input)
+            .map_err(|_| invalid("Unable to decode the PEM certificate"))?;
+        if !matches!(
+            pem.label.as_str(),
+            "CERTIFICATE" | "X509 CERTIFICATE" | "TRUSTED CERTIFICATE"
+        ) {
+            return Err(invalid("Expected a certificate PEM label"));
+        }
+        // x509-parser 0.18 accepts any END label. Require the original BEGIN
+        // and END lines to match; decoding must not repair malformed envelopes.
+        let envelope = &input[..input.len() - remaining.len()];
+        let mut lines = envelope
+            .split(|byte| *byte == b'\r' || *byte == b'\n')
+            .filter(|line| !line.is_empty());
+        let header = lines
+            .find(|line| line.starts_with(b"-----BEGIN "))
+            .unwrap_or_default();
+        let footer = lines.next_back().unwrap_or_default();
+        if header.trim_ascii_end() != format!("-----BEGIN {}-----", pem.label).as_bytes()
+            || footer.trim_ascii_end() != format!("-----END {}-----", pem.label).as_bytes()
+        {
+            return Err(invalid("Invalid certificate PEM boundaries"));
+        }
+        pem.contents
+    };
+    parse_certificate(&der)?;
+    Ok(der.into())
 }
 
 fn uri_name(name: &GeneralName<'_>) -> Result<Option<String>> {

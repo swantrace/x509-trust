@@ -1,21 +1,13 @@
+import type { OcspFailureCode, RevocationStatus } from "../native/index.js";
 import { nativeValidateOcsp } from "./native.ts";
 
-type OcspFailureCode =
-  | "INVALID_OCSP_RESPONSE"
-  | "OCSP_RESPONDER_ERROR"
-  | "UNSUPPORTED_OCSP_RESPONSE"
-  | "OCSP_ISSUER_MISMATCH"
-  | "OCSP_CERTIFICATE_MISMATCH"
-  | "INVALID_OCSP_SIGNATURE"
-  | "OCSP_RESPONDER_VERIFICATION_FAILED"
-  | "OCSP_NOT_YET_VALID"
-  | "OCSP_EXPIRED"
-  | "OCSP_MISSING_NEXT_UPDATE"
-  | "OCSP_STATUS_UNKNOWN";
-
 export type OcspValidationResult =
-  | { status: "good" | "revoked"; thisUpdate: Date; nextUpdate: Date }
-  | { status: "unknown"; code: OcspFailureCode; message: string };
+  | {
+      status: Exclude<`${RevocationStatus}`, "unknown">;
+      thisUpdate: Date;
+      nextUpdate: Date;
+    }
+  | { status: "unknown"; code: `${OcspFailureCode}`; message: string };
 
 // Certificate and issuer must belong to a previously validated certificate path.
 export async function validateOcsp({
