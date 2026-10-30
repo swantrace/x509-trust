@@ -253,8 +253,20 @@ useful for parsing a certificate before validation.
 
 Revocation failures include `certificateIndex`, the zero-based position in the
 validated path (`0` is the leaf). Use `code` for application decisions and
-`message` for diagnostic detail. Invalid validator configuration and invalid
-`checkDate` values throw errors.
+`message` for diagnostic detail.
+
+Configuration errors are thrown rather than returned:
+
+- `PolicyError` with `INVALID_POLICY` for malformed policy, registry,
+  registration, or loader configuration.
+- `PolicyError` with `UNSUPPORTED_POLICY` for a mandatory capability or rule
+  name that has no implementation.
+- `TypeError` for invalid option values such as an invalid `checkDate`, an empty
+  anchor set, or a non-positive deadline.
+- Cancellation rejects with a `DOMException` whose name is `AbortError`.
+
+None of these thrown errors, and none of the failure codes above, can enter the
+success path.
 
 ## Trust policies
 
@@ -368,6 +380,15 @@ registry.register({
   rules: communityARules
 });
 
+registry.register({
+  communityId: "community-b",
+  trustAnchors: [communityBRoot],
+  policy: {
+    ...communityBPolicy,
+    version: 2
+  }
+});
+
 const result = await registry.verify({
   communityId: "community-a",
   policyVersion: 2, // optional; the highest registered version otherwise
@@ -375,7 +396,9 @@ const result = await registry.verify({
 });
 ```
 
-The registry stores immutable anchors, compiled policies, and trusted rules.
+Communities are independent. The same certificate SAN can appear in two
+communities whose trust anchors differ, and each community can register several
+policy versions. The registry stores immutable anchors, compiled policies, and trusted rules.
 `verify()` input can select only a registered community and optional version; it
 cannot supply anchors, policies, or rules. Unknown communities return
 `UNKNOWN_COMMUNITY` and do not fall back to another community or to a default
@@ -726,3 +749,58 @@ const validator = createTrustValidator({
 
 The application owns the Redis connection. Cache values are strings and TTLs
 are expressed in milliseconds.
+
+
+## Benchmark
+
+`npm run benchmark` generates `docs/benchmark.md` from synthetic certificates,
+signed CRL/OCSP evidence, and a local HTTP server. It reports cold and warm
+validation, slow sources, early revocation, OCSP-to-CRL fallback, a shared
+single-flight burst, a large cached CRL, and inline/worker CPU path work. It is a
+measurement tool, not a unit-test gate.
+
+## Migration from the native/Rust branch
+
+This release is the pure TypeScript/Node implementation. It does not ship a
+native addon, `native/` directory, Cargo files, napi-rs bindings, `.node`
+binaries, or `@napi-rs/*` runtime dependency. Artifacts from the Rust branch are
+not used or packed.
+
+| Rust-branch export | This package |
+| ------------------ | ------------ |
+| `nativeValidateCertificatePath()` | `createTrustValidator().verify()` or `createTrustRegistry().verify()` |
+| `nativeValidateCrl()` / `nativeValidateOcsp()` | Internal DER engine steps; callers use `verify()` |
+| `nativeCreateOcspRequest()` | Internal engine step; custom OCSP loaders receive `requestDer` context from the provider |
+| `nativeCertificateDer()` | Not public; pass PEM or DER `CertificateInput` to the validator |
+| `nativeUriSubjectAlternativeNames()` | `getUriSubjectAlternativeNames()` or `result.leafCertificate.uriSubjectAlternativeNames` |
+| `nativeRevocationEndpoints()` | Not public; the validator reads AIA/CRL distribution points during path preparation |
+
+For applications that persist or compare validation output, keep these formats
+in mind:
+
+- `fingerprint256` is uppercase colon-separated SHA-256.
+- `serialNumber` is uppercase hex without colons or DER sign padding.
+- Validity and evidence times are Unix epoch milliseconds.
+- `leafCertificate` nests identity/key metadata; the old top-level
+  `leafUriSubjectAlternativeNames` field is removed.
+- Failures are `ValidationResult` objects with the documented `code` union, not
+  mixed native result shapes.
+- Revocation summaries use `evidence[]` entries with `certificateIndex`,
+  `mechanism`, status, authentication/freshness facts, and epoch-millisecond
+  timestamps.
+
+Sahara and its databases were not modified by this work. Its Rust branch and
+credentials remain outside this repository.
+
+## Package and deployment contract
+
+- Node.js 24 or later; ESM only.
+- Public entry point: `x509-trust` via `./dist/index.js` and `./dist/index.d.ts`.
+- Runtime dependencies: `asn1js`, `pkijs`, and `piscina` (only for the optional
+  worker engine). The worker file is included in `dist` and resolved relative to
+  the installed package, including when the package is installed from a tarball.
+- `npm pack` contains `dist`, `package.json`, and `README.md`; it excludes
+  `.dsh`, PDFs, tests, benchmark sources, fixtures, native artifacts, private
+  keys, and stale build output. Builds remove `dist` first so stale files cannot
+  be packed.
+- No database, UI framework, or web server is part of this package.
