@@ -809,6 +809,13 @@ validation, slow sources, early revocation, OCSP-to-CRL fallback, a shared
 single-flight burst, a large cached CRL, and inline/worker CPU path work. It is a
 measurement tool, not a unit-test gate.
 
+`npm run benchmark:concurrency` generates `docs/concurrency-benchmark.md`. It
+runs closed-loop concurrent validations while a separate health endpoint is
+polled in the same process, reporting validation throughput, health latency,
+event-loop delay, CPU, RSS, and worker queue depth. Use it to compare inline and
+worker modes under application-like load; results are local measurements, not a
+production SLA.
+
 ## Migration from the native/Rust branch
 
 This release is the pure TypeScript/Node implementation. It does not ship a
