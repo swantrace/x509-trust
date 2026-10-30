@@ -275,6 +275,18 @@ export async function createSyntheticChain({
   return { root, intermediate, leaf: leafCertificate };
 }
 
+export async function createLeafForChain(
+  chain: Pick<SyntheticChain, "root" | "intermediate">,
+  options: Partial<CertificateOptions> = {}
+): Promise<SyntheticCertificate> {
+  const keys = await generateKeys();
+  return createCertificate(
+    { commonName: "Synthetic Leaf", ...options },
+    keys,
+    chain.intermediate
+  );
+}
+
 export async function createCrl(
   issuer: SyntheticCertificate,
   revoked: readonly SyntheticCertificate[],

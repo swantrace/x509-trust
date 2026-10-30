@@ -9,6 +9,7 @@ export {
 export type { EvidenceSummary } from "./evidence.ts";
 export type { HttpOptions, OcspLoadOptions } from "./http-loaders.ts";
 export type {
+  CertificateFacts,
   KeyUsageName,
   ValidatedLeafCertificate
 } from "./leaf-certificate.ts";
@@ -21,6 +22,21 @@ export {
   type TrustPolicyInput,
   trustPolicyCapabilities
 } from "./policy.ts";
+export {
+  type RuleLeafFacts,
+  type RulePathFacts,
+  type TrustRule,
+  type TrustRuleContext,
+  type TrustRuleRegistration,
+  type TrustRuleResult
+} from "./rules.ts";
+export {
+  createTrustRegistry,
+  type TrustCommunityRegistration,
+  type TrustRegistry,
+  type TrustRegistryOptions,
+  type TrustRegistryVerifyOptions
+} from "./trust-registry.ts";
 export {
   createTrustValidator,
   type TrustValidator,

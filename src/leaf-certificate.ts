@@ -1,9 +1,11 @@
 import { X509Certificate } from "node:crypto";
 import { BitString } from "asn1js";
 import {
+  BasicConstraints,
   type Certificate,
   CertificatePolicies,
   ExtKeyUsage,
+  id_BasicConstraints,
   id_CertificatePolicies,
   id_ExtKeyUsage,
   id_KeyUsage
@@ -20,6 +22,16 @@ export type KeyUsageName =
   | "cRLSign"
   | "encipherOnly"
   | "decipherOnly";
+
+export interface CertificateFacts {
+  fingerprint256: string;
+  subject: string;
+  issuer: string;
+  isCa: boolean;
+  keyUsages?: KeyUsageName[];
+  extendedKeyUsageOids?: string[];
+  certificatePolicyOids?: string[];
+}
 
 export interface ValidatedLeafCertificate {
   publicKeySpkiDer: Uint8Array;
@@ -110,25 +122,49 @@ function normalizeSerialNumber(serialNumber: string): string {
   return normalized;
 }
 
+export function extractCertificateFacts(
+  certificate: Certificate,
+  der: Uint8Array
+): CertificateFacts {
+  const nodeCertificate = new X509Certificate(der);
+  const constraints = singleExtension<BasicConstraints>(
+    certificate,
+    id_BasicConstraints
+  );
+  if (constraints !== undefined && !(constraints instanceof BasicConstraints)) {
+    throw new TypeError("Invalid basic constraints extension");
+  }
+  return {
+    fingerprint256: nodeCertificate.fingerprint256,
+    subject: nodeCertificate.subject,
+    issuer: nodeCertificate.issuer,
+    isCa: constraints?.cA === true,
+    keyUsages: keyUsageNames(certificate),
+    extendedKeyUsageOids: extendedKeyUsageOids(certificate),
+    certificatePolicyOids: certificatePolicyOids(certificate)
+  };
+}
+
 export function extractLeafCertificate(
   certificate: Certificate,
   der: Uint8Array
 ): ValidatedLeafCertificate {
   const nodeCertificate = new X509Certificate(der);
+  const facts = extractCertificateFacts(certificate, der);
   return {
     publicKeySpkiDer: new Uint8Array(
       certificate.subjectPublicKeyInfo.toSchema().toBER(false)
     ),
     uriSubjectAlternativeNames: uriSubjectAlternativeNames(certificate),
-    fingerprint256: nodeCertificate.fingerprint256,
+    fingerprint256: facts.fingerprint256,
     serialNumber: normalizeSerialNumber(nodeCertificate.serialNumber),
     notBeforeMs: certificate.notBefore.value.getTime(),
     notAfterMs: certificate.notAfter.value.getTime(),
-    subject: nodeCertificate.subject,
-    issuer: nodeCertificate.issuer,
-    keyUsages: keyUsageNames(certificate),
-    extendedKeyUsageOids: extendedKeyUsageOids(certificate),
-    certificatePolicyOids: certificatePolicyOids(certificate),
+    subject: facts.subject,
+    issuer: facts.issuer,
+    keyUsages: facts.keyUsages,
+    extendedKeyUsageOids: facts.extendedKeyUsageOids,
+    certificatePolicyOids: facts.certificatePolicyOids,
     der: Uint8Array.from(der)
   };
 }

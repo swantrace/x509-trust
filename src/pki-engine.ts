@@ -13,6 +13,8 @@ import {
 } from "./certificate-path.ts";
 import { type CrlValidationResult, validateCrl } from "./crl.ts";
 import {
+  type CertificateFacts,
+  extractCertificateFacts,
   extractLeafCertificate,
   type ValidatedLeafCertificate
 } from "./leaf-certificate.ts";
@@ -47,6 +49,7 @@ export interface PreparedCertificate {
   crlUrls: string[];
   ocspUrls: string[];
   ocspRequestDer?: Uint8Array;
+  facts: CertificateFacts;
 }
 
 export type PreparedPathResult =
@@ -324,7 +327,11 @@ export function createInlinePkiEngine(): PkiEngine {
             ocspUrls: endpoints.ocspUrls,
             ocspRequestDer: issuer
               ? await createOcspRequest(certificate, issuer)
-              : undefined
+              : undefined,
+            facts: extractCertificateFacts(
+              certificate,
+              path.certificatePath[index]
+            )
           });
         }
 

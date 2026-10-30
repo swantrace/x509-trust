@@ -18,10 +18,17 @@ import {
   type TrustPolicyInput
 } from "./policy.ts";
 import { createRevocationChecker } from "./revocation-checker.ts";
+import {
+  applyTrustRules,
+  normalizeRuleRegistrations,
+  type TrustRuleRegistration
+} from "./rules.ts";
 
 export interface TrustValidatorOptions {
   trustAnchors: readonly CertificateInput[];
   policy?: TrustPolicyInput;
+  rules?: readonly TrustRuleRegistration[];
+  communityId?: string;
   loadCrl?: ((url: string) => Promise<Uint8Array>) | false;
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
   http?: HttpOptions;
@@ -41,7 +48,10 @@ export type ValidationFailureCode =
   | "INVALID_CERTIFICATE"
   | "INVALID_CERTIFICATE_PATH"
   | "CERTIFICATE_REVOKED"
-  | "REVOCATION_STATUS_UNKNOWN";
+  | "REVOCATION_STATUS_UNKNOWN"
+  | "POLICY_REJECTED"
+  | "UNKNOWN_COMMUNITY"
+  | "UNKNOWN_POLICY_VERSION";
 
 export type ValidationResult =
   | {
@@ -52,6 +62,7 @@ export type ValidationResult =
       evidence: EvidenceSummary[];
       policyId: string;
       policyVersion: number;
+      communityId?: string;
     }
   | {
       valid: false;
@@ -61,6 +72,7 @@ export type ValidationResult =
       evidence?: EvidenceSummary[];
       policyId?: string;
       policyVersion?: number;
+      communityId?: string;
     };
 
 export interface TrustValidator {
@@ -70,6 +82,8 @@ export interface TrustValidator {
 export function createTrustValidator({
   trustAnchors,
   policy: policyInput,
+  rules: ruleInput,
+  communityId,
   loadCrl,
   loadOcsp,
   http,
@@ -82,7 +96,16 @@ export function createTrustValidator({
   if (trustAnchors.length === 0) {
     throw new TypeError("trustAnchors must contain at least one certificate");
   }
-  const policy = compileTrustPolicy(policyInput ?? DEFAULT_TRUST_POLICY);
+  if (
+    communityId !== undefined &&
+    (typeof communityId !== "string" || communityId.trim() === "")
+  ) {
+    throw invalidPolicy("communityId must be a non-empty string");
+  }
+  const rules = normalizeRuleRegistrations(ruleInput);
+  const policy = compileTrustPolicy(policyInput ?? DEFAULT_TRUST_POLICY, {
+    registeredRuleNames: rules.map((rule) => rule.name)
+  });
   const anchors = trustAnchors.map((input) =>
     Uint8Array.from(new X509Certificate(input).raw)
   );
@@ -135,7 +158,8 @@ export function createTrustValidator({
           code: path.code,
           message: path.message,
           policyId: policy.id,
-          policyVersion: policy.version
+          policyVersion: policy.version,
+          ...(communityId ? { communityId } : {})
         };
       }
 
@@ -159,7 +183,8 @@ export function createTrustValidator({
             certificateIndex: index,
             evidence: [revocation.evidence],
             policyId: policy.id,
-            policyVersion: policy.version
+            policyVersion: policy.version,
+            ...(communityId ? { communityId } : {})
           };
         }
         if (revocation.status === "unknown") {
@@ -169,10 +194,30 @@ export function createTrustValidator({
             message: revocation.message,
             certificateIndex: index,
             policyId: policy.id,
-            policyVersion: policy.version
+            policyVersion: policy.version,
+            ...(communityId ? { communityId } : {})
           };
         }
         evidence.push(...revocation.evidence);
+      }
+
+      const ruleFailure = await applyTrustRules({
+        policy,
+        leaf: path.leafCertificate,
+        certificatePath: path.certificates.map((entry) => entry.facts),
+        communityId,
+        rules
+      });
+      if (ruleFailure) {
+        return {
+          valid: false,
+          code: "POLICY_REJECTED",
+          message: ruleFailure,
+          evidence,
+          policyId: policy.id,
+          policyVersion: policy.version,
+          ...(communityId ? { communityId } : {})
+        };
       }
 
       return {
@@ -182,7 +227,8 @@ export function createTrustValidator({
         leafCertificate: path.leafCertificate,
         evidence,
         policyId: policy.id,
-        policyVersion: policy.version
+        policyVersion: policy.version,
+        ...(communityId ? { communityId } : {})
       };
     }
   };

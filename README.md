@@ -118,7 +118,10 @@ type ValidationFailureCode =
   | "INVALID_CERTIFICATE"
   | "INVALID_CERTIFICATE_PATH"
   | "CERTIFICATE_REVOKED"
-  | "REVOCATION_STATUS_UNKNOWN";
+  | "REVOCATION_STATUS_UNKNOWN"
+  | "POLICY_REJECTED"
+  | "UNKNOWN_COMMUNITY"
+  | "UNKNOWN_POLICY_VERSION";
 
 type KeyUsageName =
   | "digitalSignature"
@@ -223,6 +226,9 @@ useful for parsing a certificate before validation.
 | `INVALID_CERTIFICATE_PATH`  | No valid path to a configured anchor was found, including signature or date failures. |
 | `CERTIFICATE_REVOKED`       | Authenticated evidence reports that a path certificate is revoked.                    |
 | `REVOCATION_STATUS_UNKNOWN` | Revocation status could not be established for a path certificate.                    |
+| `POLICY_REJECTED`           | A registered policy rule rejected an otherwise valid result.                          |
+| `UNKNOWN_COMMUNITY`         | A registry request named a community that is not locally registered.                  |
+| `UNKNOWN_POLICY_VERSION`    | The community exists but the requested policy version is not registered.              |
 
 Revocation failures include `certificateIndex`, the zero-based position in the
 validated path (`0` is the leaf). Use `code` for application decisions and
@@ -282,6 +288,83 @@ unauthenticated, expired, and unsupported evidence never establish good.
 Invalid policy objects throw a `PolicyError` with code `INVALID_POLICY`; a
 mandatory capability that is not implemented throws code `UNSUPPORTED_POLICY`.
 Disabling a loader that the policy requires is rejected at configuration time.
+
+### Policy rules
+
+Policies can require declarative checks on the validated result:
+
+```typescript
+policy.rules = {
+  leafKeyUsage: ["digitalSignature"],
+  leafExtendedKeyUsage: ["1.3.6.1.5.5.7.3.2"],
+  requiredLeafPolicyOids: ["1.2.3.4"],
+  maxPathDepth: 3 // total certificates, including leaf and anchor
+};
+```
+
+`requiredLeafPolicyOids` checks only the leaf certificate's policy extension. It
+does not claim or perform full RFC 5280 policy-tree processing. `maxPathDepth`
+counts the leaf and the selected trust anchor. All requirements are ANDed and
+empty arrays are rejected.
+
+Hosts can also register named rule functions as trusted program code:
+
+```typescript
+const rules = [
+  {
+    name: "application-check",
+    check(context: TrustRuleContext) {
+      return context.leaf.extendedKeyUsageOids?.includes(
+        "1.3.6.1.5.5.7.3.2"
+      )
+        ? { ok: true as const }
+        : { ok: false as const, message: "clientAuth usage is required" };
+    }
+  }
+];
+```
+
+Rules run only after the path and all required revocation evidence succeed. A
+rule can reject a result, but cannot turn a path, signature, time, revoked, or
+unknown evidence failure into success. Exceptions and unrecognized rule results
+are failures. Rule facts are frozen copies derived from the validated path.
+
+## Community registry
+
+Use `createTrustRegistry()` when trust anchors and policies are selected by a
+locally registered community identifier instead of by request input:
+
+```typescript
+const registry = createTrustRegistry({
+  loadCrl: readCrlFromStorage,
+  loadOcsp: false
+});
+
+registry.register({
+  communityId: "community-a",
+  trustAnchors: [communityARoot],
+  policy: communityAPolicy,
+  rules: communityARules
+});
+
+const result = await registry.verify({
+  communityId: "community-a",
+  policyVersion: 2, // optional; the highest registered version otherwise
+  certificateChain: [clientCertificate, intermediateCertificate]
+});
+```
+
+The registry stores immutable anchors, compiled policies, and trusted rules.
+`verify()` input can select only a registered community and optional version; it
+cannot supply anchors, policies, or rules. Unknown communities return
+`UNKNOWN_COMMUNITY` and do not fall back to another community or to a default
+validator. Unknown versions return `UNKNOWN_POLICY_VERSION`.
+
+Registering the same community and policy version twice throws
+`INVALID_POLICY`; a failed registration is not partially stored. Each request
+selects its snapshot before awaiting validation, so registering a new version
+does not change an in-flight request. Successful registry results include
+`communityId`, `policyId`, and `policyVersion`.
 
 ## Validation policy and supported PKI
 
