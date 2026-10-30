@@ -55,9 +55,9 @@ after(async () => {
   await worker.close({ force: true });
 });
 
-function policy(): ValidationProfileInput {
+function profile(): ValidationProfileInput {
   return {
-    id: "worker:policy",
+    id: "worker:profile",
     version: 1,
     source: "worker parity test",
     anchorSetId: "worker:root",
@@ -157,13 +157,13 @@ test("worker CRL and OCSP validation match the inline engine", async () => {
 test("worker-backed validation matches inline success and failure outcomes", async () => {
   const inlineValidator = createTrustValidator({
     trustAnchors: [chain.root.der],
-    profile: policy(),
+    profile: profile(),
     provider: provider(),
     now: () => checkDateMs
   });
   const workerValidator = createTrustValidator({
     trustAnchors: [chain.root.der],
-    profile: policy(),
+    profile: profile(),
     provider: provider(),
     engine: worker,
     now: () => checkDateMs
@@ -198,7 +198,7 @@ test("worker-backed validation matches inline success and failure outcomes", asy
   const revokedCrl = await createCrl(chain.intermediate, [revokedLeaf]);
   const inlineRevoked = await createTrustValidator({
     trustAnchors: [chain.root.der],
-    profile: policy(),
+    profile: profile(),
     provider: createEvidenceProvider({
       loadOcsp: false,
       loadCrl: async (url) =>
@@ -208,7 +208,7 @@ test("worker-backed validation matches inline success and failure outcomes", asy
   }).verify({ certificateChain: [revokedLeaf.der, chain.intermediate.der] });
   const workerRevoked = await createTrustValidator({
     trustAnchors: [chain.root.der],
-    profile: policy(),
+    profile: profile(),
     provider: createEvidenceProvider({
       loadOcsp: false,
       loadCrl: async (url) =>

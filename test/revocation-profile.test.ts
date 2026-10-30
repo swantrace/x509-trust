@@ -54,14 +54,14 @@ const intermediateRevokedOcsp = await createOcspResponse(
 );
 const chainInput = [chain.leaf.der, chain.intermediate.der];
 
-function policy(
+function profile(
   requiredEvidence: RequiredEvidence,
   sourceOrder: RevocationMechanism[]
 ): ValidationProfileInput {
   return {
     id: `test:${requiredEvidence}`,
     version: 1,
-    source: "synthetic policy",
+    source: "synthetic profile",
     anchorSetId: "synthetic:root",
     revocation: { requiredEvidence, sourceOrder }
   };
@@ -86,7 +86,7 @@ function validators({
 }) {
   return createTrustValidator({
     trustAnchors: [chain.root.der],
-    profile: policy(requiredEvidence, sourceOrder),
+    profile: profile(requiredEvidence, sourceOrder),
     now,
     loadCrl:
       loadCrl === false
@@ -221,12 +221,12 @@ test("requiredEvidence=crl needs CRL success even when OCSP is good", async () =
   assert.equal(ocspOnlyResult.evidence, undefined);
 });
 
-test("registered policy rejects a disabled required loader at configuration time", () => {
+test("registered profile rejects a disabled required loader at configuration time", () => {
   assert.throws(
     () =>
       createTrustValidator({
         trustAnchors: [chain.root.der],
-        profile: policy("crl", ["ocsp", "crl"]),
+        profile: profile("crl", ["ocsp", "crl"]),
         loadCrl: false
       }),
     (error: unknown) => {
@@ -239,7 +239,7 @@ test("registered policy rejects a disabled required loader at configuration time
     () =>
       createTrustValidator({
         trustAnchors: [chain.root.der],
-        profile: policy("ocsp", ["ocsp"]),
+        profile: profile("ocsp", ["ocsp"]),
         loadOcsp: false
       }),
     (error: unknown) => {

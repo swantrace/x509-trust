@@ -56,9 +56,9 @@ const intermediateGoodOcsp = await createOcspResponse(
   "good"
 );
 
-function policy(sourceOrder: ("crl" | "ocsp")[]): ValidationProfileInput {
+function profile(sourceOrder: ("crl" | "ocsp")[]): ValidationProfileInput {
   return {
-    id: "concurrency:policy",
+    id: "concurrency:profile",
     version: 1,
     source: "concurrency test",
     anchorSetId: "concurrency:root",
@@ -74,7 +74,7 @@ test("starts every non-anchor evidence pipeline before any of them completes", {
   const releases = new Map<string, () => void>();
   const validator = createTrustValidator({
     trustAnchors: [crlChain.root.der],
-    profile: policy(["crl"]),
+    profile: profile(["crl"]),
     now,
     loadOcsp: false,
     loadCrl: async (url) => {
@@ -110,7 +110,7 @@ test("a stalled other certificate does not delay a confirmed revoked result", {
   const releaseIntermediate = deferred<Uint8Array>();
   const validator = createTrustValidator({
     trustAnchors: [ocspChain.root.der],
-    profile: policy(["ocsp", "crl"]),
+    profile: profile(["ocsp", "crl"]),
     now,
     loadCrl: false,
     loadOcsp: async ({ url, signal }) => {
@@ -146,7 +146,7 @@ test("falls back within one certificate while another certificate is still pendi
   const releaseIntermediate = deferred<Uint8Array>();
   const validator = createTrustValidator({
     trustAnchors: [crlChain.root.der],
-    profile: policy(["crl"]),
+    profile: profile(["crl"]),
     now,
     loadOcsp: false,
     loadCrl: async (url) => {
@@ -174,7 +174,7 @@ test("external abort reaches willing loaders and rejects with AbortError", {
   const observedAbort = deferred();
   const validator = createTrustValidator({
     trustAnchors: [crlChain.root.der],
-    profile: policy(["crl"]),
+    profile: profile(["crl"]),
     now,
     loadOcsp: false,
     loadCrl: (_url, options) =>
@@ -227,7 +227,7 @@ test("a slow cache write does not delay an authenticated revoked result", {
   };
   const validator = createTrustValidator({
     trustAnchors: [ocspChain.root.der],
-    profile: policy(["ocsp"]),
+    profile: profile(["ocsp"]),
     now,
     cache,
     loadCrl: false,
@@ -244,7 +244,7 @@ test("a slow cache write does not delay an authenticated revoked result", {
 test("an explicit checkDate is copied before asynchronous validation", async () => {
   const validator = createTrustValidator({
     trustAnchors: [crlChain.root.der],
-    profile: policy(["crl"]),
+    profile: profile(["crl"]),
     now,
     loadOcsp: false,
     loadCrl: async (url) =>

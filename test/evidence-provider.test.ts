@@ -332,8 +332,8 @@ test("verification deadline returns RESOURCE_LIMIT_EXCEEDED", async () => {
     loadOcsp: false,
     loadCrl: async () => release.promise
   });
-  const policy: ValidationProfileInput = {
-    id: "deadline:policy",
+  const profile: ValidationProfileInput = {
+    id: "deadline:profile",
     version: 1,
     source: "deadline test",
     anchorSetId: "deadline:root",
@@ -341,7 +341,7 @@ test("verification deadline returns RESOURCE_LIMIT_EXCEEDED", async () => {
   };
   const validator = createTrustValidator({
     trustAnchors: [chain.root.der],
-    profile: policy,
+    profile,
     provider,
     deadlineMs: 25
   });
@@ -374,8 +374,8 @@ test("validator maps a provider queue limit to RESOURCE_LIMIT_EXCEEDED", async (
       return release.promise;
     }
   });
-  const policy: ValidationProfileInput = {
-    id: "queue:policy",
+  const profile: ValidationProfileInput = {
+    id: "queue:profile",
     version: 1,
     source: "queue test",
     anchorSetId: "queue:root",
@@ -384,7 +384,7 @@ test("validator maps a provider queue limit to RESOURCE_LIMIT_EXCEEDED", async (
   const makeValidator = (chain: typeof chainA) =>
     createTrustValidator({
       trustAnchors: [chain.root.der],
-      profile: policy,
+      profile,
       provider,
       deadlineMs: 5000
     });
@@ -416,8 +416,8 @@ test("shared CRL bytes still yield per-certificate status", async () => {
     loadCrl: async (url) =>
       url.endsWith("/intermediate.crl") ? intermediateCrl : leafCrl
   });
-  const policy: ValidationProfileInput = {
-    id: "status:policy",
+  const profile: ValidationProfileInput = {
+    id: "status:profile",
     version: 1,
     source: "status test",
     anchorSetId: "status:root",
@@ -426,7 +426,7 @@ test("shared CRL bytes still yield per-certificate status", async () => {
   const makeValidator = () =>
     createTrustValidator({
       trustAnchors: [chain.root.der],
-      profile: policy,
+      profile,
       provider,
       now: () => new Date("2026-10-15T00:00:00Z").getTime()
     });

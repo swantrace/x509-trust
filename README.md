@@ -103,28 +103,28 @@ function createMemoryCache(options?: {
 }): CacheStore;
 ```
 
-| Option                       | Default                      | Purpose                                                                  |
-| ---------------------------- | ---------------------------- | ------------------------------------------------------------------------ |
-| `trustAnchors`               | Required                     | Nonempty set of explicitly trusted certificates, copied at construction. |
-| `profile`                    | Built-in strict profile      | Local validation profile; compiled and frozen at construction.           |
-| `rules`                      | None                         | Trusted custom rule functions.                                           |
-| `loadCrl`                    | Built-in HTTP loader         | Override CRL retrieval, or `false` to disable CRL checks.                |
-| `loadOcsp`                   | Built-in HTTP loader         | Override OCSP retrieval, or `false` to disable OCSP checks.              |
-| `provider`                   | Per-validator provider       | Shared provider for request bounds and single-flight.                    |
-| `engine`                     | Inline engine                | Worker-backed engine from `x509-trust/worker`.                           |
+| Option                         | Default                        | Purpose                                                                  |
+| ------------------------------ | ------------------------------ | ------------------------------------------------------------------------ |
+| `trustAnchors`               | Required                       | Nonempty set of explicitly trusted certificates, copied at construction. |
+| `profile`                    | Built-in strict profile        | Local validation profile; compiled and frozen at construction.           |
+| `rules`                      | None                           | Trusted custom rule functions.                                           |
+| `loadCrl`                    | Built-in HTTP loader           | Override CRL retrieval, or `false` to disable CRL checks.              |
+| `loadOcsp`                   | Built-in HTTP loader           | Override OCSP retrieval, or `false` to disable OCSP checks.            |
+| `provider`                   | Per-validator provider         | Shared provider for request bounds and single-flight.                    |
+| `engine`                     | Inline engine                  | Worker-backed engine from `x509-trust/worker`.                         |
 | `http.timeoutMs`             | `5000`                       | Deadline for each HTTP request, including reading its body.              |
 | `http.maxResponseBytes`      | `5242880` (5 MiB)            | Maximum response body size per request.                                  |
-| `http.allowedOrigins`        | No allowlist                 | Restrict retrieval to the listed origins.                                |
+| `http.allowedOrigins`        | No allowlist                   | Restrict retrieval to the listed origins.                                |
 | `http.allowPrivateAddresses` | `false`                      | Allow private or loopback destinations.                                  |
 | `deadlineMs`                 | `60000`                      | Overall evidence-phase deadline.                                         |
-| `cache`                      | In-memory, 256 entries       | Storage for verified CRL and OCSP evidence.                              |
-| `maxCacheAgeMs`              | `3600000` (1 hour)           | Maximum evidence cache age, also bounded by `nextUpdate`.                |
+| `cache`                      | In-memory, 256 entries         | Storage for verified CRL and OCSP evidence.                              |
+| `maxCacheAgeMs`              | `3600000` (1 hour)           | Maximum evidence cache age, also bounded by `nextUpdate`.              |
 | `cacheKeyPrefix`             | `"x509-trust:revocation:v1"` | Cache namespace.                                                         |
 | `now`                        | `Date.now`                   | Clock returning epoch milliseconds.                                      |
-| `onDiagnostic`               | None                         | Receive cache and revocation diagnostics.                                |
-| `verify().certificateChain`  | Required                     | Leaf certificate followed by intermediates.                              |
+| `onDiagnostic`               | None                           | Receive cache and revocation diagnostics.                                |
+| `verify().certificateChain`  | Required                       | Leaf certificate followed by intermediates.                              |
 | `verify().checkDate`         | `now()`                      | Date at which to validate the path and evidence.                         |
-| `verify().signal`            | None                         | Cancels verification; rejection is an `AbortError`.                      |
+| `verify().signal`            | None                           | Cancels verification; rejection is an `AbortError`.                    |
 
 ### Validation profiles
 
@@ -195,14 +195,14 @@ const validator = createTrustValidator({
 
 Defaults:
 
-| Field                          | Default              | Meaning                                                |
-| ------------------------------ | -------------------- | ------------------------------------------------------ |
+| Field                            | Default                | Meaning                                                        |
+| -------------------------------- | ---------------------- | -------------------------------------------------------------- |
 | `revocation.requiredEvidence`  | `"any"`              | `any`, `crl`, `ocsp`, or `both` must establish status. |
-| `revocation.sourceOrder`       | `["ocsp", "crl"]`    | Order in which advertised mechanisms are tried.        |
-| `revocation.onUnknown`         | `"reject"`           | Unknown never becomes success.                         |
-| `revocation.scope`             | `"non-anchor-chain"` | Every non-anchor certificate is checked.               |
-| `revocation.requireNextUpdate` | `true`               | Evidence must have a freshness boundary.               |
-| `revocation.clockSkewMs`       | `0`                  | No clock-skew allowance.                               |
+| `revocation.sourceOrder`       | `["ocsp", "crl"]`    | Order in which advertised mechanisms are tried.                |
+| `revocation.onUnknown`         | `"reject"`           | Unknown never becomes success.                                 |
+| `revocation.scope`             | `"non-anchor-chain"` | Every non-anchor certificate is checked.                       |
+| `revocation.requireNextUpdate` | `true`               | Evidence must have a freshness boundary.                       |
+| `revocation.clockSkewMs`       | `0`                  | No clock-skew allowance.                                       |
 
 `sourceOrder` controls collection order. `requiredEvidence` decides which
 mechanisms must produce a good result:
@@ -445,8 +445,8 @@ type ValidationResult =
     };
 ```
 
-| Failure code                | Meaning                                                                               |
-| --------------------------- | ------------------------------------------------------------------------------------- |
+| Failure code                  | Meaning                                                                               |
+| ----------------------------- | ------------------------------------------------------------------------------------- |
 | `INVALID_CERTIFICATE`       | A supplied certificate could not be parsed.                                           |
 | `INVALID_CERTIFICATE_PATH`  | No valid path to a configured anchor was found, including signature or date failures. |
 | `CERTIFICATE_REVOKED`       | Authenticated evidence reports that a path certificate is revoked.                    |
@@ -510,7 +510,7 @@ itself is not checked for revocation; applications control trust in it through
 | Delegated OCSP responders                                | Not supported.                    |
 | Delta CRLs                                               | Not supported.                    |
 | Scoped or indirect CRLs                                  | Not supported.                    |
-| OCSP responses without `nextUpdate`                      | Not accepted; treated as unknown. |
+| OCSP responses without `nextUpdate`                    | Not accepted; treated as unknown. |
 
 Both CRL and OCSP evidence must have a usable `nextUpdate`. This is a library
 freshness requirement. Before using the library with a CA, confirm that its PKI
@@ -541,8 +541,8 @@ const validator = createTrustValidator({
 });
 ```
 
-| Provider option      | Default | Meaning                                              |
-| -------------------- | ------- | ---------------------------------------------------- |
+| Provider option        | Default   | Meaning                                              |
+| ---------------------- | --------- | ---------------------------------------------------- |
 | `maxActiveRequests`  | `8`     | Simultaneous evidence downloads across the provider. |
 | `maxQueuedRequests`  | `32`    | Requests waiting for a slot; excess is rejected.     |
 | `maxActivePerOrigin` | `4`     | Simultaneous downloads per URL origin.               |
@@ -588,14 +588,14 @@ const validator = createTrustValidator({
 await engine.close({ force: true });
 ```
 
-| Worker option   | Default                            | Meaning                                       |
-| --------------- | ---------------------------------- | --------------------------------------------- |
+| Worker option     | Default                              | Meaning                                       |
+| ----------------- | ------------------------------------ | --------------------------------------------- |
 | `maxThreads`    | `min(4, availableParallelism - 1)` | Maximum worker threads.                       |
 | `minThreads`    | `0`                                | Threads kept ready.                           |
 | `maxQueue`      | `maxThreads * 4`                   | Tasks waiting for a worker.                   |
 | `idleTimeout`   | `30000`                            | Idle worker shutdown delay.                   |
 | `taskTimeoutMs` | `10000`                            | Per-task deadline.                            |
-| `filename`      | Packaged worker                    | Override only when embedding the worker file. |
+| `filename`      | Packaged worker                      | Override only when embedding the worker file. |
 
 Only DER bytes and JSON-compatible DTOs cross the thread boundary. HTTP, request
 scheduling, single-flight, caching, diagnostics, registered rules, and

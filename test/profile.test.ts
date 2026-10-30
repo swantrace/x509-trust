@@ -36,13 +36,13 @@ const root = readCertificate("root");
 const intermediate = readCertificate("intermediate");
 const leaf = readCertificate("leaf");
 
-function validPolicy(
+function validProfile(
   overrides: Partial<ValidationProfileInput> = {}
 ): ValidationProfileInput {
   return {
-    id: "test:policy",
+    id: "test:profile",
     version: 1,
-    source: "test policy",
+    source: "test profile",
     anchorSetId: "test:anchors",
     revocation: {
       requiredEvidence: "any",
@@ -63,51 +63,54 @@ function expectProfileError(
   });
 }
 
-test("compiles the strict default policy and freezes every level", () => {
-  const policy = compileValidationProfile();
-  assert.equal(policy.id, DEFAULT_VALIDATION_PROFILE.id);
-  assert.equal(policy.revocation.requiredEvidence, "any");
-  assert.deepEqual(policy.revocation.sourceOrder, ["ocsp", "crl"]);
-  assert.equal(policy.revocation.onUnknown, "reject");
-  assert.equal(policy.revocation.scope, "non-anchor-chain");
-  assert.equal(policy.revocation.requireNextUpdate, true);
-  assert.equal(policy.revocation.clockSkewMs, 0);
-  assert.ok(Object.isFrozen(policy));
-  assert.ok(Object.isFrozen(policy.revocation));
-  assert.ok(Object.isFrozen(policy.revocation.sourceOrder));
+test("compiles the strict default profile and freezes every level", () => {
+  const profile = compileValidationProfile();
+  assert.equal(profile.id, DEFAULT_VALIDATION_PROFILE.id);
+  assert.equal(profile.revocation.requiredEvidence, "any");
+  assert.deepEqual(profile.revocation.sourceOrder, ["ocsp", "crl"]);
+  assert.equal(profile.revocation.onUnknown, "reject");
+  assert.equal(profile.revocation.scope, "non-anchor-chain");
+  assert.equal(profile.revocation.requireNextUpdate, true);
+  assert.equal(profile.revocation.clockSkewMs, 0);
+  assert.ok(Object.isFrozen(profile));
+  assert.ok(Object.isFrozen(profile.revocation));
+  assert.ok(Object.isFrozen(profile.revocation.sourceOrder));
 });
 
-test("copies caller data so later mutations cannot change a compiled policy", () => {
-  const input = validPolicy({
+test("copies caller data so later mutations cannot change a compiled profile", () => {
+  const input = validProfile({
     rules: {
       leafKeyUsage: ["digitalSignature"],
       requiredCertificatePolicyOids: ["1.2.3.4"]
     }
   });
-  const policy = compileValidationProfile(input);
+  const profile = compileValidationProfile(input);
   input.revocation!.sourceOrder = ["crl"];
   (input.rules!.leafKeyUsage as string[]).push("keyCertSign");
   (input.rules!.requiredCertificatePolicyOids as string[]).push("1.2.3.5");
-  assert.deepEqual(policy.revocation.sourceOrder, ["ocsp", "crl"]);
-  assert.deepEqual(policy.rules?.leafKeyUsage, ["digitalSignature"]);
-  assert.deepEqual(policy.rules?.requiredCertificatePolicyOids, ["1.2.3.4"]);
+  assert.deepEqual(profile.revocation.sourceOrder, ["ocsp", "crl"]);
+  assert.deepEqual(profile.rules?.leafKeyUsage, ["digitalSignature"]);
+  assert.deepEqual(profile.rules?.requiredCertificatePolicyOids, ["1.2.3.4"]);
   assert.throws(() => {
-    (policy.revocation.sourceOrder as RevocationMechanism[]).push("crl");
+    (profile.revocation.sourceOrder as RevocationMechanism[]).push("crl");
   }, TypeError);
 });
 
 type RevocationMechanism = "crl" | "ocsp";
 
-test("rejects unknown fields and malformed policy identity", () => {
+test("rejects unknown fields and malformed profile identity", () => {
   expectProfileError(
     () =>
-      compileValidationProfile({ ...validPolicy(), unexpected: true } as never),
+      compileValidationProfile({
+        ...validProfile(),
+        unexpected: true
+      } as never),
     "INVALID_PROFILE"
   );
   expectProfileError(
     () =>
       compileValidationProfile({
-        ...validPolicy(),
+        ...validProfile(),
         revocation: { requiredEvidence: "any", unknown: true }
       } as never),
     "INVALID_PROFILE"
@@ -115,7 +118,7 @@ test("rejects unknown fields and malformed policy identity", () => {
   expectProfileError(
     () =>
       compileValidationProfile({
-        ...validPolicy(),
+        ...validProfile(),
         rules: { unknownRule: true }
       } as never),
     "INVALID_PROFILE"
@@ -128,7 +131,7 @@ test("rejects unknown fields and malformed policy identity", () => {
     { anchorSetId: "" }
   ]) {
     expectProfileError(
-      () => compileValidationProfile({ ...validPolicy(), ...overrides }),
+      () => compileValidationProfile({ ...validProfile(), ...overrides }),
       "INVALID_PROFILE"
     );
   }
@@ -139,7 +142,7 @@ test("rejects duplicate or unsupported source orders that miss required evidence
     expectProfileError(
       () =>
         compileValidationProfile({
-          ...validPolicy(),
+          ...validProfile(),
           revocation: { requiredEvidence: "any", sourceOrder }
         } as never),
       sourceOrder[0] === "dns" ? "UNSUPPORTED_PROFILE" : "INVALID_PROFILE"
@@ -148,7 +151,7 @@ test("rejects duplicate or unsupported source orders that miss required evidence
   expectProfileError(
     () =>
       compileValidationProfile({
-        ...validPolicy(),
+        ...validProfile(),
         revocation: { requiredEvidence: "crl", sourceOrder: ["ocsp"] }
       }),
     "INVALID_PROFILE"
@@ -156,13 +159,13 @@ test("rejects duplicate or unsupported source orders that miss required evidence
   expectProfileError(
     () =>
       compileValidationProfile({
-        ...validPolicy(),
+        ...validProfile(),
         revocation: { requiredEvidence: "both", sourceOrder: ["crl"] }
       }),
     "INVALID_PROFILE"
   );
   const both = compileValidationProfile({
-    ...validPolicy(),
+    ...validProfile(),
     revocation: { requiredEvidence: "both", sourceOrder: ["ocsp", "crl"] }
   });
   assert.deepEqual(both.revocation.sourceOrder, ["ocsp", "crl"]);
@@ -180,9 +183,9 @@ test("rejects unsupported revocation configuration", () => {
     expectProfileError(
       () =>
         compileValidationProfile({
-          ...validPolicy(),
+          ...validProfile(),
           revocation: {
-            ...validPolicy().revocation,
+            ...validProfile().revocation,
             ...revocation
           }
         }),
@@ -205,7 +208,7 @@ test("validates rule values, OIDs and registered rule names", () => {
     expectProfileError(
       () =>
         compileValidationProfile({
-          ...validPolicy(),
+          ...validProfile(),
           rules: rules as never
         }),
       (rules as { leafKeyUsage?: string[] }).leafKeyUsage?.[0] === "notAUsage"
@@ -216,22 +219,22 @@ test("validates rule values, OIDs and registered rule names", () => {
   expectProfileError(
     () =>
       compileValidationProfile({
-        ...validPolicy(),
+        ...validProfile(),
         rules: { requiredRuleNames: ["unregistered"] }
       }),
     "UNSUPPORTED_PROFILE"
   );
-  const policy = compileValidationProfile(
+  const profile = compileValidationProfile(
     {
-      ...validPolicy(),
-      rules: { requiredRuleNames: ["policy-set-check"] }
+      ...validProfile(),
+      rules: { requiredRuleNames: ["profile-check"] }
     },
-    { registeredRuleNames: ["policy-set-check"] }
+    { registeredRuleNames: ["profile-check"] }
   );
-  assert.deepEqual(policy.rules?.requiredRuleNames, ["policy-set-check"]);
+  assert.deepEqual(profile.rules?.requiredRuleNames, ["profile-check"]);
 });
 
-test("rejects invalid policy configuration before any certificate I/O", async () => {
+test("rejects invalid profile configuration before any certificate I/O", async () => {
   let loads = 0;
   const loader = async () => {
     loads++;
@@ -241,7 +244,7 @@ test("rejects invalid policy configuration before any certificate I/O", async ()
     () =>
       createTrustValidator({
         trustAnchors: [root],
-        profile: { ...validPolicy(), id: "" },
+        profile: { ...validProfile(), id: "" },
         loadCrl: loader
       }),
     "INVALID_PROFILE"
@@ -250,7 +253,7 @@ test("rejects invalid policy configuration before any certificate I/O", async ()
     () =>
       createTrustValidator({
         trustAnchors: [root],
-        profile: validPolicy({
+        profile: validProfile({
           revocation: { requiredEvidence: "both", sourceOrder: ["ocsp"] }
         }),
         loadCrl: loader
@@ -260,10 +263,10 @@ test("rejects invalid policy configuration before any certificate I/O", async ()
   assert.equal(loads, 0);
 });
 
-test("a valid strict policy still rejects invalid paths and authenticated revocation", async () => {
+test("a valid strict profile still rejects invalid paths and authenticated revocation", async () => {
   const validator = createTrustValidator({
     trustAnchors: [root],
-    profile: validPolicy(),
+    profile: validProfile(),
     now,
     loadOcsp: false,
     async loadCrl(url) {
@@ -274,7 +277,7 @@ test("a valid strict policy still rejects invalid paths and authenticated revoca
   });
   const untrustedValidator = createTrustValidator({
     trustAnchors: [readCertificate("untrusted-root")],
-    profile: validPolicy(),
+    profile: validProfile(),
     now,
     loadOcsp: false,
     loadCrl: async () => readCrl("intermediate-revoked")
@@ -284,7 +287,7 @@ test("a valid strict policy still rejects invalid paths and authenticated revoca
   });
   assert.equal(untrusted.valid, false);
   assert.equal(untrusted.code, "INVALID_CERTIFICATE_PATH");
-  assert.equal(untrusted.profileId, "test:policy");
+  assert.equal(untrusted.profileId, "test:profile");
 
   const revoked = await validator.verify({
     certificateChain: [readCertificate("revoked-leaf"), intermediate]
@@ -294,10 +297,10 @@ test("a valid strict policy still rejects invalid paths and authenticated revoca
   assert.equal(revoked.profileVersion, 1);
 });
 
-test("returns the selected policy identity on success", async () => {
+test("returns the selected profile identity on success", async () => {
   const validator = createTrustValidator({
     trustAnchors: [root],
-    profile: validPolicy({ id: "test:policy:success", version: 7 }),
+    profile: validProfile({ id: "test:profile:success", version: 7 }),
     now,
     loadOcsp: false,
     async loadCrl(url) {
@@ -310,7 +313,7 @@ test("returns the selected policy identity on success", async () => {
     certificateChain: [leaf, intermediate]
   });
   assert.equal(result.valid, true);
-  assert.equal(result.profileId, "test:policy:success");
+  assert.equal(result.profileId, "test:profile:success");
   assert.equal(result.profileVersion, 7);
   assert.equal(
     result.leafCertificate.fingerprint256,
@@ -318,28 +321,28 @@ test("returns the selected policy identity on success", async () => {
   );
 });
 
-test("compiles structured policy sources and ordered string versions", () => {
-  const policy = compileValidationProfile({
-    ...validPolicy(),
+test("compiles structured profile sources and ordered string versions", () => {
+  const profile = compileValidationProfile({
+    ...validProfile(),
     version: "2026-01",
     versionOrder: 42,
     source: {
-      uri: "https://policy-set.example/policy",
+      uri: "https://profile.example/profile",
       version: "3.2",
       effectiveDate: "2026-01-15"
     }
   });
-  assert.equal(policy.version, "2026-01");
-  assert.equal(policy.versionOrder, 42);
-  assert.deepEqual(policy.source, {
-    uri: "https://policy-set.example/policy",
+  assert.equal(profile.version, "2026-01");
+  assert.equal(profile.versionOrder, 42);
+  assert.deepEqual(profile.source, {
+    uri: "https://profile.example/profile",
     version: "3.2",
     effectiveDate: "2026-01-15"
   });
   assert.throws(
     () =>
       compileValidationProfile({
-        ...validPolicy(),
+        ...validProfile(),
         version: "2026-01"
       }),
     (error: unknown) => {
@@ -356,7 +359,7 @@ test("compiles structured policy sources and ordered string versions", () => {
     assert.throws(
       () =>
         compileValidationProfile({
-          ...validPolicy(),
+          ...validProfile(),
           source: source as never
         }),
       ProfileError

@@ -53,7 +53,7 @@ const crlByUrl = new Map<string, Uint8Array>([
   [secondIntermediateCrlUrl, secondIntermediateCrl]
 ]);
 
-function policyFor(
+function profileFor(
   id: string,
   {
     version = 1,
@@ -68,7 +68,7 @@ function policyFor(
   return {
     id,
     version,
-    source: "synthetic registry policy",
+    source: "synthetic registry profile",
     anchorSetId: "synthetic:root",
     revocation: {
       requiredEvidence,
@@ -103,7 +103,7 @@ function makeRegistry(
   for (const registration of registrations) {
     const profile =
       registration.profile ??
-      policyFor(`${registration.profileId ?? "default"}:policy`);
+      profileFor(`${registration.profileId ?? "default"}:profile`);
     registry.register({
       profile:
         registration.profileId === undefined
@@ -123,17 +123,17 @@ function inputFor(chain: typeof base, leaf: SyntheticCertificate = chain.leaf) {
 async function registryWithRule(
   profileId: string,
   rule: TrustRuleRegistration,
-  policyOverrides: Partial<ValidationProfileInput> = {}
+  profileOverrides: Partial<ValidationProfileInput> = {}
 ) {
   const { registry } = makeRegistry([
     {
       profileId,
       chain: base,
       profile: {
-        ...policyFor(`${profileId}:policy`),
-        ...policyOverrides,
+        ...profileFor(`${profileId}:profile`),
+        ...profileOverrides,
         rules: {
-          ...policyOverrides.rules,
+          ...profileOverrides.rules,
           requiredRuleNames: [rule.name]
         }
       },
@@ -143,23 +143,23 @@ async function registryWithRule(
   return registry;
 }
 
-test("selects anchors per policy-set even when leaves share a SAN", async () => {
+test("selects anchors per profile even when leaves share a SAN", async () => {
   const { registry } = makeRegistry([
-    { profileId: "policy-set-a", chain: base },
-    { profileId: "policy-set-b", chain: second }
+    { profileId: "profile-a", chain: base },
+    { profileId: "profile-b", chain: second }
   ]);
   const first = await registry.verify({
-    profileId: "policy-set-a",
+    profileId: "profile-a",
     certificateChain: inputFor(base)
   });
   const other = await registry.verify({
-    profileId: "policy-set-b",
+    profileId: "profile-b",
     certificateChain: inputFor(second)
   });
   assert.equal(first.valid, true);
   assert.equal(other.valid, true);
-  assert.equal(first.valid && first.profileId, "policy-set-a");
-  assert.equal(other.valid && other.profileId, "policy-set-b");
+  assert.equal(first.valid && first.profileId, "profile-a");
+  assert.equal(other.valid && other.profileId, "profile-b");
   assert.deepEqual(
     first.valid && first.leafCertificate.uriSubjectAlternativeNames,
     [sameSan]
@@ -170,7 +170,7 @@ test("selects anchors per policy-set even when leaves share a SAN", async () => 
   );
 
   const cross = await registry.verify({
-    profileId: "policy-set-a",
+    profileId: "profile-a",
     certificateChain: inputFor(second)
   });
   assert.equal(cross.valid, false);
@@ -199,19 +199,19 @@ test("unknown profiles and versions fail without any evidence I/O", async () => 
   assert.equal(calls.crl.length, 0);
 });
 
-test("rejects duplicate policy versions and does not partially register failures", async () => {
+test("rejects duplicate profile versions and does not partially register failures", async () => {
   const { registry } = makeRegistry([
     {
       profileId: "versions",
       chain: base,
-      profile: policyFor("v1", { version: 1 })
+      profile: profileFor("v1", { version: 1 })
     }
   ]);
   assert.throws(
     () =>
       registry.register({
         trustAnchors: [base.root.der],
-        profile: { ...policyFor("v1-again", { version: 1 }), id: "versions" }
+        profile: { ...profileFor("v1-again", { version: 1 }), id: "versions" }
       }),
     (error: unknown) => {
       assert.ok(error instanceof ProfileError);
@@ -225,7 +225,7 @@ test("rejects duplicate policy versions and does not partially register failures
       registry.register({
         trustAnchors: [base.root.der],
         profile: {
-          ...policyFor("broken"),
+          ...profileFor("broken"),
           rules: { requiredRuleNames: ["missing-rule"] }
         }
       }),
@@ -243,17 +243,17 @@ test("rejects duplicate policy versions and does not partially register failures
   assert.equal(broken.code, "UNKNOWN_PROFILE");
 });
 
-test("selects the latest policy version unless an exact version is requested", async () => {
+test("selects the latest profile version unless an exact version is requested", async () => {
   const { registry } = makeRegistry([
     {
       profileId: "versioned",
       chain: base,
-      profile: policyFor("versioned:v1", { version: 1 })
+      profile: profileFor("versioned:v1", { version: 1 })
     },
     {
       profileId: "versioned",
       chain: base,
-      profile: policyFor("versioned:v2", {
+      profile: profileFor("versioned:v2", {
         version: 2,
         rules: { leafExtendedKeyUsage: ["1.3.6.1.5.5.7.3.9"] }
       })
@@ -290,7 +290,7 @@ test("a version registered during an in-flight request does not affect that requ
       {
         profileId: "in-flight",
         chain: base,
-        profile: policyFor("in-flight:v1", { version: 1 })
+        profile: profileFor("in-flight:v1", { version: 1 })
       }
     ],
     async (url) => {
@@ -311,7 +311,7 @@ test("a version registered during an in-flight request does not affect that requ
   registry.register({
     trustAnchors: [base.root.der],
     profile: {
-      ...policyFor("in-flight:v2", {
+      ...profileFor("in-flight:v2", {
         version: 2,
         rules: { leafExtendedKeyUsage: ["1.3.6.1.5.5.7.3.9"] }
       }),
@@ -326,15 +326,15 @@ test("a version registered during an in-flight request does not affect that requ
 
 test("registration snapshots resist later caller mutation", async () => {
   const anchor = Uint8Array.from(base.root.der);
-  const policy = policyFor("mutable");
+  const profile = profileFor("mutable");
   const { registry } = makeRegistry([]);
   registry.register({
     trustAnchors: [anchor],
-    profile: { ...policy, id: "mutable" }
+    profile: { ...profile, id: "mutable" }
   });
   anchor.fill(0);
-  (policy.revocation as { sourceOrder: string[] }).sourceOrder = ["ocsp"];
-  policy.id = "changed";
+  (profile.revocation as { sourceOrder: string[] }).sourceOrder = ["ocsp"];
+  profile.id = "changed";
   const result = await registry.verify({
     profileId: "mutable",
     certificateChain: inputFor(base)
@@ -343,12 +343,12 @@ test("registration snapshots resist later caller mutation", async () => {
   assert.equal(result.valid && result.profileId, "mutable");
 });
 
-test("built-in leaf KU, EKU, policy OID and path depth rules run after core validation", async () => {
+test("built-in leaf KU, EKU, certificate policy OID and path depth rules run after core validation", async () => {
   const { registry } = makeRegistry([
     {
       profileId: "rules",
       chain: base,
-      profile: policyFor("rules:policy", {
+      profile: profileFor("rules:profile", {
         rules: {
           leafKeyUsage: ["digitalSignature"],
           leafExtendedKeyUsage: ["1.3.6.1.5.5.7.3.2"],
@@ -389,17 +389,17 @@ test("built-in leaf KU, EKU, policy OID and path depth rules run after core vali
     crlUrls: [baseLeafCrlUrl],
     extendedKeyUsageOids: ["1.3.6.1.5.5.7.3.2"]
   });
-  const { registry: policyRegistry } = makeRegistry([
+  const { registry: profileRegistry } = makeRegistry([
     {
-      profileId: "leaf-policy",
+      profileId: "leaf-profile",
       chain: base,
-      profile: policyFor("leaf-policy:policy", {
+      profile: profileFor("leaf-profile:profile", {
         rules: { requiredCertificatePolicyOids: ["2.9.9.9"] }
       })
     }
   ]);
-  const intermediateOnly = await policyRegistry.verify({
-    profileId: "leaf-policy",
+  const intermediateOnly = await profileRegistry.verify({
+    profileId: "leaf-profile",
     certificateChain: inputFor(base, leafWithoutPolicy)
   });
   assert.equal(intermediateOnly.valid, false);
@@ -409,8 +409,8 @@ test("built-in leaf KU, EKU, policy OID and path depth rules run after core vali
     crlUrls: [baseLeafCrlUrl],
     certificatePolicyOids: ["2.9.9.9"]
   });
-  const leafPolicy = await policyRegistry.verify({
-    profileId: "leaf-policy",
+  const leafPolicy = await profileRegistry.verify({
+    profileId: "leaf-profile",
     certificateChain: inputFor(base, leafWithPolicy)
   });
   assert.equal(leafPolicy.valid, true);
@@ -419,7 +419,7 @@ test("built-in leaf KU, EKU, policy OID and path depth rules run after core vali
     {
       profileId: "depth",
       chain: base,
-      profile: policyFor("depth:policy", {
+      profile: profileFor("depth:profile", {
         rules: { maxPathDepth: 2 }
       })
     }
@@ -504,7 +504,7 @@ test("rules cannot override core path or revocation failures", async () => {
       profileId: "core",
       chain: base,
       profile: {
-        ...policyFor("core:policy"),
+        ...profileFor("core:profile"),
         rules: { requiredRuleNames: [rule.name] }
       },
       rules: [rule]
@@ -527,7 +527,7 @@ test("rules cannot override core path or revocation failures", async () => {
         profileId: "core-revoked",
         chain: base,
         profile: {
-          ...policyFor("core-revoked:policy"),
+          ...profileFor("core-revoked:profile"),
           rules: { requiredRuleNames: [rule.name] }
         },
         rules: [rule]
@@ -548,12 +548,12 @@ test("rules cannot override core path or revocation failures", async () => {
   assert.equal(revoked.code, "CERTIFICATE_REVOKED");
 });
 
-test("selects string policy versions using explicit versionOrder", async () => {
+test("selects string profile versions using explicit versionOrder", async () => {
   const v1 = {
     id: "versions:string:v1",
     version: "2025-01",
     versionOrder: 10,
-    source: { uri: "https://policy-set.example/policy/2025-01" },
+    source: { uri: "https://profile.example/profile/2025-01" },
     anchorSetId: "synthetic:root",
     revocation: {
       requiredEvidence: "crl" as const,
@@ -564,7 +564,7 @@ test("selects string policy versions using explicit versionOrder", async () => {
     id: "versions:string:v2",
     version: "2026-01",
     versionOrder: 20,
-    source: { uri: "https://policy-set.example/policy/2026-01" },
+    source: { uri: "https://profile.example/profile/2026-01" },
     anchorSetId: "synthetic:root",
     revocation: {
       requiredEvidence: "crl" as const,
