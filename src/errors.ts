@@ -17,3 +17,12 @@ export function invalidPolicy(message: string): PolicyError {
 export function unsupportedPolicy(message: string): PolicyError {
   return new PolicyError("UNSUPPORTED_POLICY", message);
 }
+
+export class ResourceLimitError extends Error {
+  readonly code = "RESOURCE_LIMIT_EXCEEDED" as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "ResourceLimitError";
+  }
+}

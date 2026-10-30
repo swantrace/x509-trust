@@ -35,9 +35,10 @@ trust: including a root in the supplied chain does not make it trusted.
 ## API
 
 These types describe the public API and can be imported from `x509-trust`.
-The package also exports `createTrustValidator()`, `createMemoryCache()`,
-`getUriSubjectAlternativeNames()`, `compileTrustPolicy()`, `PolicyError`, and
-the policy/capability types.
+The package also exports `createTrustValidator()`, `createTrustRegistry()`,
+`createEvidenceProvider()`, `createMemoryCache()`,
+`getUriSubjectAlternativeNames()`, `compileTrustPolicy()`, `PolicyError`,
+`ResourceLimitError`, and the policy/capability/provider types.
 
 ```typescript
 type CertificateInput = string | Uint8Array;
@@ -49,7 +50,9 @@ interface TrustValidatorOptions {
   communityId?: string;
   loadCrl?: ((url: string, options?: CrlLoadOptions) => Promise<Uint8Array>) | false;
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
+  provider?: EvidenceProvider;
   http?: HttpOptions;
+  deadlineMs?: number;
   cache?: CacheStore;
   maxCacheAgeMs?: number;
   cacheKeyPrefix?: string;
@@ -59,6 +62,7 @@ interface TrustValidatorOptions {
 
 interface CrlLoadOptions {
   signal?: AbortSignal;
+  issuerCertificate?: Uint8Array;
 }
 
 interface OcspLoadOptions {
@@ -66,6 +70,7 @@ interface OcspLoadOptions {
   certificate: Uint8Array;
   issuerCertificate: Uint8Array;
   signal?: AbortSignal;
+  requestDer?: Uint8Array;
 }
 
 interface HttpOptions {
@@ -118,6 +123,8 @@ function createMemoryCache(options?: {
 | `verify().certificateChain`      | Required                       | Leaf certificate followed by intermediates.                                            |
 | `verify().checkDate`             | Current time from `now`      | Date at which to validate the path and revocation evidence.                            |
 | `verify().signal`                | None                         | AbortSignal that cancels this verification; rejection is an `AbortError`.              |
+| `provider`                       | Per-validator provider       | Shared `EvidenceProvider` that applies app-wide request bounds and single-flight.      |
+| `deadlineMs`                     | `60000` (60 seconds)         | Overall evidence-phase deadline; exceeding it returns `RESOURCE_LIMIT_EXCEEDED`.       |
 | `createMemoryCache().maxEntries` | `256`                        | Maximum entries; the oldest inserted entry is evicted when full.                       |
 | `createMemoryCache().now`        | `Date.now`                   | Clock used to expire entries in that memory store.                                     |
 
@@ -131,7 +138,8 @@ type ValidationFailureCode =
   | "REVOCATION_STATUS_UNKNOWN"
   | "POLICY_REJECTED"
   | "UNKNOWN_COMMUNITY"
-  | "UNKNOWN_POLICY_VERSION";
+  | "UNKNOWN_POLICY_VERSION"
+  | "RESOURCE_LIMIT_EXCEEDED";
 
 type KeyUsageName =
   | "digitalSignature"
@@ -239,6 +247,7 @@ useful for parsing a certificate before validation.
 | `POLICY_REJECTED`           | A registered policy rule rejected an otherwise valid result.                          |
 | `UNKNOWN_COMMUNITY`         | A registry request named a community that is not locally registered.                  |
 | `UNKNOWN_POLICY_VERSION`    | The community exists but the requested policy version is not registered.              |
+| `RESOURCE_LIMIT_EXCEEDED`   | The evidence request queue, queue wait, or overall verification deadline was exceeded. |
 
 Revocation failures include `certificateIndex`, the zero-based position in the
 validated path (`0` is the leaf). Use `code` for application decisions and
@@ -409,6 +418,57 @@ Before using the library with a trust community or CA, confirm that its PKI
 publishes evidence within this supported scope. Rejecting unsupported evidence
 avoids accepting an unverified status, but can also reject otherwise valid
 certificates.
+
+## Shared evidence provider
+
+By default each validator creates its own evidence provider and downloads with
+conservative finite limits. To enforce application-wide limits across several
+validators or communities, create one provider explicitly and pass it to each
+validator or to the registry:
+
+```typescript
+import {
+  createEvidenceProvider,
+  createTrustValidator
+} from "x509-trust";
+
+const provider = createEvidenceProvider({
+  loadCrl: readCrlFromStorage,
+  loadOcsp: false,
+  maxActiveRequests: 8,
+  maxQueuedRequests: 32,
+  maxActivePerOrigin: 4,
+  queueTimeoutMs: 30000
+});
+
+const validator = createTrustValidator({
+  trustAnchors: [rootCertificate],
+  provider,
+  deadlineMs: 60000
+});
+```
+
+| Provider option      | Default | Meaning |
+| -------------------- | ------- | ------- |
+| `maxActiveRequests`  | `8`     | Maximum simultaneous evidence downloads across the provider. |
+| `maxQueuedRequests`  | `32`    | Maximum requests waiting for a slot; excess is rejected. |
+| `maxActivePerOrigin` | `4`     | Maximum simultaneous downloads per URL origin. |
+| `queueTimeoutMs`     | `30000` | Maximum time a request may wait for a slot. |
+
+Queue-full, queue-timeout, and verification-deadline conditions return
+`RESOURCE_LIMIT_EXCEEDED`. They never become a good or unknown status.
+
+The provider runs single-flight only for raw downloads. A CRL flight is keyed by
+URL, issuer, and the provider instance; an OCSP flight also includes the target
+certificate and the request DER. Different provider instances, even with the
+same URL, do not share work, which keeps separate loader, origin, credential, or
+SSRF configurations isolated. Function source text is never used as identity.
+
+Each waiting verification can cancel independently. A cancel removes only that
+waiter; when the last waiter leaves, the underlying request aborts. Successful
+and failed flights are always removed so a later request can retry. A shared CRL
+download is still evaluated separately for each certificate; a `good` result
+for one certificate never becomes another certificate's status.
 
 ## Concurrency, early rejection, and cancellation
 

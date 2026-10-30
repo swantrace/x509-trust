@@ -1,4 +1,5 @@
 import type { CrlValidationResult } from "./crl.ts";
+import { ResourceLimitError } from "./errors.ts";
 import {
   decideRevocationEvidence,
   type EvidenceAttempt,
@@ -134,7 +135,10 @@ export async function collectCertificateEvidence({
                 checkDateMs,
                 signal,
                 load: (loadSignal) =>
-                  (loader as CrlLoader)(url, { signal: loadSignal })
+                  (loader as CrlLoader)(url, {
+                    signal: loadSignal,
+                    issuerCertificate: prepared.issuerDer!
+                  })
               })
             : await checker.checkOcsp({
                 certificateDer: prepared.der,
@@ -149,7 +153,8 @@ export async function collectCertificateEvidence({
                     url,
                     certificate: Uint8Array.from(prepared.der),
                     issuerCertificate: Uint8Array.from(prepared.issuerDer!),
-                    signal: loadSignal
+                    signal: loadSignal,
+                    requestDer: prepared.ocspRequestDer
                   })
               });
         const summary = recordResult(
@@ -184,7 +189,7 @@ export async function collectCertificateEvidence({
         // This mechanism is satisfied; continue with the next required one.
         break;
       } catch (error) {
-        if (signal?.aborted) throw error;
+        if (signal?.aborted || error instanceof ResourceLimitError) throw error;
         attempts.push({
           certificateIndex,
           mechanism,

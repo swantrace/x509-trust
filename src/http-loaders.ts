@@ -39,6 +39,8 @@ globalIpv6.addSubnet("2000::", 3, "ipv6");
 
 export interface CrlLoadOptions {
   signal?: AbortSignal;
+  // Context for provider single-flight keys; the HTTP loader ignores it.
+  issuerCertificate?: Uint8Array;
 }
 
 export interface OcspLoadOptions {
@@ -46,6 +48,8 @@ export interface OcspLoadOptions {
   certificate: Uint8Array;
   issuerCertificate: Uint8Array;
   signal?: AbortSignal;
+  // When supplied, the provider's request DER is used and keyed.
+  requestDer?: Uint8Array;
 }
 
 export interface HttpOptions {
@@ -241,8 +245,12 @@ export function createHttpLoaders({
       url,
       certificate,
       issuerCertificate,
-      signal
+      signal,
+      requestDer
     }: OcspLoadOptions): Promise<Uint8Array> {
+      if (requestDer) {
+        return request(url, Uint8Array.from(requestDer), signal);
+      }
       const ocsp = new OCSPRequest();
       await ocsp.createForCertificate(
         Certificate.fromBER(Uint8Array.from(certificate)),

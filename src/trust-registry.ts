@@ -3,7 +3,12 @@ import type { CacheStore } from "./cache.ts";
 import type { CertificateInput } from "./certificate-path.ts";
 import type { DiagnosticCallback } from "./diagnostics.ts";
 import { invalidPolicy } from "./errors.ts";
-import type { HttpOptions, OcspLoadOptions } from "./http-loaders.ts";
+import type { EvidenceProvider } from "./evidence-provider.ts";
+import type {
+  CrlLoadOptions,
+  HttpOptions,
+  OcspLoadOptions
+} from "./http-loaders.ts";
 import { compileTrustPolicy, type TrustPolicyInput } from "./policy.ts";
 import {
   normalizeRuleRegistrations,
@@ -23,9 +28,13 @@ export interface TrustCommunityRegistration {
 }
 
 export interface TrustRegistryOptions {
-  loadCrl?: ((url: string) => Promise<Uint8Array>) | false;
+  loadCrl?:
+    | ((url: string, options?: CrlLoadOptions) => Promise<Uint8Array>)
+    | false;
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
+  provider?: EvidenceProvider;
   http?: HttpOptions;
+  deadlineMs?: number;
   cache?: CacheStore;
   maxCacheAgeMs?: number;
   cacheKeyPrefix?: string;

@@ -4,9 +4,18 @@ export type { CertificateInput } from "./certificate-path.ts";
 export type { DiagnosticCallback, DiagnosticEvent } from "./diagnostics.ts";
 export {
   PolicyError,
-  type PolicyErrorCode
+  type PolicyErrorCode,
+  ResourceLimitError
 } from "./errors.ts";
 export type { EvidenceSummary } from "./evidence.ts";
+export {
+  type CrlLoader,
+  createEvidenceProvider,
+  EVIDENCE_PROVIDER_DEFAULTS,
+  type EvidenceProvider,
+  type EvidenceProviderOptions,
+  type OcspLoader
+} from "./evidence-provider.ts";
 export type {
   CrlLoadOptions,
   HttpOptions,
@@ -26,6 +35,11 @@ export {
   type TrustPolicyInput,
   trustPolicyCapabilities
 } from "./policy.ts";
+export {
+  createRequestScheduler,
+  type RequestScheduler,
+  type RequestSchedulerOptions
+} from "./request-scheduler.ts";
 export {
   type RuleLeafFacts,
   type RulePathFacts,

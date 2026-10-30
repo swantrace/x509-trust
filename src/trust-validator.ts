@@ -2,12 +2,15 @@ import { X509Certificate } from "node:crypto";
 import type { CacheStore } from "./cache.ts";
 import type { CertificateInput } from "./certificate-path.ts";
 import type { DiagnosticCallback } from "./diagnostics.ts";
-import { invalidPolicy } from "./errors.ts";
+import { invalidPolicy, ResourceLimitError } from "./errors.ts";
 import { type EvidenceSummary, requiredMechanisms } from "./evidence.ts";
 import { collectCertificateEvidence } from "./evidence-collector.ts";
 import {
+  createEvidenceProvider,
+  type EvidenceProvider
+} from "./evidence-provider.ts";
+import {
   type CrlLoadOptions,
-  createHttpLoaders,
   type HttpOptions,
   type OcspLoadOptions
 } from "./http-loaders.ts";
@@ -34,7 +37,9 @@ export interface TrustValidatorOptions {
     | ((url: string, options?: CrlLoadOptions) => Promise<Uint8Array>)
     | false;
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
+  provider?: EvidenceProvider;
   http?: HttpOptions;
+  deadlineMs?: number;
   cache?: CacheStore;
   maxCacheAgeMs?: number;
   cacheKeyPrefix?: string;
@@ -55,7 +60,8 @@ export type ValidationFailureCode =
   | "REVOCATION_STATUS_UNKNOWN"
   | "POLICY_REJECTED"
   | "UNKNOWN_COMMUNITY"
-  | "UNKNOWN_POLICY_VERSION";
+  | "UNKNOWN_POLICY_VERSION"
+  | "RESOURCE_LIMIT_EXCEEDED";
 
 export type ValidationResult =
   | {
@@ -83,6 +89,9 @@ export interface TrustValidator {
   verify(options: VerifyOptions): Promise<ValidationResult>;
 }
 
+type CrlLoader = (url: string, options?: CrlLoadOptions) => Promise<Uint8Array>;
+type OcspLoader = (options: OcspLoadOptions) => Promise<Uint8Array>;
+
 function abortError(): DOMException {
   return new DOMException("The operation was aborted", "AbortError");
 }
@@ -94,7 +103,9 @@ export function createTrustValidator({
   communityId,
   loadCrl,
   loadOcsp,
+  provider,
   http,
+  deadlineMs = 60_000,
   cache,
   maxCacheAgeMs,
   cacheKeyPrefix,
@@ -117,10 +128,21 @@ export function createTrustValidator({
   const anchors = trustAnchors.map((input) =>
     Uint8Array.from(new X509Certificate(input).raw)
   );
+  if (!Number.isSafeInteger(deadlineMs) || deadlineMs <= 0) {
+    throw new TypeError("deadlineMs must be a positive integer");
+  }
+  if (provider && (loadCrl !== undefined || loadOcsp !== undefined)) {
+    throw invalidPolicy("provider cannot be combined with loadCrl or loadOcsp");
+  }
+  const evidenceProvider =
+    provider ?? createEvidenceProvider({ loadCrl, loadOcsp, http });
+  const crlLoader: CrlLoader | false = evidenceProvider.supportsCrl
+    ? (url, options) => evidenceProvider.loadCrl(url, options)
+    : false;
+  const ocspLoader: OcspLoader | false = evidenceProvider.supportsOcsp
+    ? (options) => evidenceProvider.loadOcsp(options)
+    : false;
   const engine = createInlinePkiEngine();
-  const defaults = createHttpLoaders(http);
-  const crlLoader = loadCrl ?? defaults.loadCrl;
-  const ocspLoader = loadOcsp ?? defaults.loadOcsp;
   const mandatory =
     policy.revocation.requiredEvidence === "any"
       ? []
@@ -199,6 +221,14 @@ export function createTrustValidator({
       }>((resolve) => {
         resolveRevoked = resolve;
       });
+      let deadlineTimer: NodeJS.Timeout | undefined;
+      const deadline = new Promise<"deadline">((resolve) => {
+        deadlineTimer = setTimeout(() => {
+          controller.abort();
+          resolve("deadline");
+        }, deadlineMs);
+        deadlineTimer.unref();
+      });
 
       type PipelineResult =
         | {
@@ -238,12 +268,25 @@ export function createTrustValidator({
           results
         })),
         revokedSignal.then((value) => ({ kind: "revoked" as const, value })),
-        aborted.then(() => ({ kind: "aborted" as const }))
+        aborted.then(() => ({ kind: "aborted" as const })),
+        deadline.then(() => ({ kind: "deadline" as const }))
       ]);
       removeAbortListener();
+      if (deadlineTimer) clearTimeout(deadlineTimer);
       if (outcome.kind === "aborted") {
         controller.abort();
         throw abortError();
+      }
+      if (outcome.kind === "deadline") {
+        controller.abort();
+        return {
+          valid: false,
+          code: "RESOURCE_LIMIT_EXCEEDED",
+          message: "The verification deadline was exceeded",
+          policyId: policy.id,
+          policyVersion: policy.version,
+          ...(communityId ? { communityId } : {})
+        };
       }
       if (outcome.kind === "revoked") {
         controller.abort();
@@ -282,10 +325,15 @@ export function createTrustValidator({
       const evidence: EvidenceSummary[] = [];
       for (const entry of outcome.results) {
         if ("error" in entry) {
+          const resourceLimited = entry.error instanceof ResourceLimitError;
           return {
             valid: false,
-            code: "REVOCATION_STATUS_UNKNOWN",
-            message: "Revocation validation failed",
+            code: resourceLimited
+              ? "RESOURCE_LIMIT_EXCEEDED"
+              : "REVOCATION_STATUS_UNKNOWN",
+            message: resourceLimited
+              ? (entry.error as ResourceLimitError).message
+              : "Revocation validation failed",
             certificateIndex: entry.index,
             policyId: policy.id,
             policyVersion: policy.version,
