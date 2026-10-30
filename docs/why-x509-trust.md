@@ -283,6 +283,84 @@ function publicKeyFingerprint(der: Uint8Array): string {
 
 如果两个社区的 anchor bundle 包含完全相同的 DER 证书，它们就是证书级共享；如果只是 SPKI 相同，则是密钥级共享，anchor 证书的有效期和约束仍可能不同。两种情况都可能让“证书链验证”无法区分 community。
 
+### 从探索到落地：registration endpoint 携带 community
+
+上面的探索可以收敛为一个明确结论：
+
+> 单凭证书无法确定 community；在 multi-community 部署中，community 必须作为注册入口的显式上下文，而不是从 `x5c` 猜测。
+
+本文建议的落地约定是：**让 discovery 返回的每个 community 的 `registration_endpoint` 都携带完整的 `community` query 参数。**
+
+```http
+GET /.well-known/udap?community=https%3A%2F%2Fcommunity-a.example.org
+```
+
+返回：
+
+```json
+{
+  "registration_endpoint": "https://as.example.org/register?community=https%3A%2F%2Fcommunity-a.example.org"
+}
+```
+
+客户端不需要理解 query 的语义；它只是使用 discovery 返回的完整 URL。software statement 的 `aud` 使用同一个完整 URL：
+
+```json
+{
+  "aud": "https://as.example.org/register?community=https%3A%2F%2Fcommunity-a.example.org"
+}
+```
+
+服务端可以用一个 handler 处理所有 community，但必须按以下顺序 fail closed：
+
+```text
+1. query 中是否带有 community？
+   缺失 → 4xx，不进入证书验证
+2. community 是否在本地允许列表？
+   不认识 → 4xx，不进入证书验证
+3. community 是否与 aud / 实际 endpoint 一致？
+   不一致 → 4xx
+4. 用该 community 对应的 profileId 调用 registry
+5. registry 使用已注册的 anchors 验证 x5c
+6. 验证失败 → 4xx，不尝试其他 community
+```
+
+这套约定的边界要写清楚：
+
+- `community` query 是本文的实现约定，不是当前 IG 定义的标准 claim；
+- 但 query 是 `registration_endpoint` URL 的一部分，合规客户端按 discovery 使用完整 URL，因此不需要额外理解这个参数；
+- 客户端若忽略 discovery、丢掉 query、使用旧 endpoint，就应注册失败；
+- 共享 anchor 时，query 只完成“选择哪个 profile”，不能证明治理归属；仍需 `(community, iss)` 注册记录、tenant 或社区策略；
+- 存在性和 allowlist 校验必须发生在任何证书 I/O 之前。
+
+这与 `x509-trust` 的边界正好对齐：
+
+```text
+UDAP adapter：endpoint query → community → profileId
+x509-trust：profileId → 已注册 anchors + profile → 验证证书链
+```
+
+库不需要知道 community，也不需要从证书推断 community。它只要求调用方先选定 profile，而 profile 在注册时已经绑定了 anchors 和规则。
+
+### Trust anchor 必须提前存在
+
+无论 anchor 存在文件、配置还是数据库，**它必须在验证前已经由宿主加载并绑定到 profile**。库不会：
+
+- 从请求中接收 anchors；
+- 从系统 roots 隐式补足；
+- 从 AIA 自动下载 anchor；
+- 在 `verify()` 时按 community 动态查找 anchor。
+
+路径是：
+
+```text
+部署/启动时加载 approved anchors
+  → registry.register({ trustAnchors, profile })
+  → 运行时 verify({ profileId, certificateChain })
+```
+
+`verify()` 不接受 anchors，因为 anchors 是配置，不是请求输入。没有预置 anchors，就没有信任起点，也就无法验证。
+
 ## 代码对应关系
 
 | 设计 | 主要实现 |
