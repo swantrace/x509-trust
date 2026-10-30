@@ -6,6 +6,7 @@ export {
   PolicyError,
   type PolicyErrorCode
 } from "./errors.ts";
+export type { EvidenceSummary } from "./evidence.ts";
 export type { HttpOptions, OcspLoadOptions } from "./http-loaders.ts";
 export type {
   KeyUsageName,
@@ -22,7 +23,6 @@ export {
 } from "./policy.ts";
 export {
   createTrustValidator,
-  type EvidenceSummary,
   type TrustValidator,
   type TrustValidatorOptions,
   type ValidationFailureCode,

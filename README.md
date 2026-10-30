@@ -35,8 +35,9 @@ trust: including a root in the supplied chain does not make it trusted.
 ## API
 
 These types describe the public API and can be imported from `x509-trust`.
-The package also exports `createTrustValidator()`, `createMemoryCache()`, and
-`getUriSubjectAlternativeNames()`.
+The package also exports `createTrustValidator()`, `createMemoryCache()`,
+`getUriSubjectAlternativeNames()`, `compileTrustPolicy()`, `PolicyError`, and
+the policy/capability types.
 
 ```typescript
 type CertificateInput = string | Uint8Array;
@@ -228,6 +229,60 @@ validated path (`0` is the leaf). Use `code` for application decisions and
 `message` for diagnostic detail. Invalid validator configuration and invalid
 `checkDate` values throw errors.
 
+## Trust policies
+
+`createTrustValidator({ trustAnchors, policy })` accepts an optional local policy
+object. Omitting it selects the built-in strict default. The policy is compiled,
+validated, deep-copied, and frozen when the validator is created; mutating the
+caller's object afterwards has no effect.
+
+```typescript
+const validator = createTrustValidator({
+  trustAnchors: [rootCertificate],
+  policy: {
+    id: "example:strict",
+    version: 1,
+    source: "https://example.org/pki/policy/1.0",
+    anchorSetId: "example:root-2026",
+    revocation: {
+      requiredEvidence: "both",
+      sourceOrder: ["crl", "ocsp"]
+    }
+  }
+});
+```
+
+The compiled policy has these defaults:
+
+| Field                              | Default        | Meaning |
+| ---------------------------------- | -------------- | ------- |
+| `revocation.requiredEvidence`      | `"any"`        | `any`, `crl`, `ocsp`, or `both` must establish status. |
+| `revocation.sourceOrder`           | `["ocsp","crl"]` | Order in which advertised mechanisms are tried. |
+| `revocation.onUnknown`             | `"reject"`     | Unknown never becomes success. |
+| `revocation.scope`                 | `"non-anchor-chain"` | Every non-anchor certificate is checked. |
+| `revocation.requireNextUpdate`     | `true`         | Evidence must have a freshness boundary. |
+| `revocation.clockSkewMs`           | `0`            | No clock-skew allowance. |
+
+`sourceOrder` controls collection order; `requiredEvidence` independently decides
+which mechanisms must produce a good result:
+
+- `any`: the first authenticated, current good or revoked result establishes
+  status. Revoked always rejects.
+- `crl` / `ocsp`: only that mechanism can satisfy the requirement. The other
+  mechanism may still be queried in `sourceOrder` and an authenticated revoked
+  result from it still rejects, but its good status is not sufficient.
+- `both`: both mechanisms must produce good results. Revoked from either
+  mechanism rejects immediately.
+
+Source URLs for each mechanism are tried in advertised order. Collection stops
+as soon as the requirement is satisfied, so this library does not claim that
+unqueried sources agree with the returned result. Unknown, unavailable,
+unauthenticated, expired, and unsupported evidence never establish good.
+
+Invalid policy objects throw a `PolicyError` with code `INVALID_POLICY`; a
+mandatory capability that is not implemented throws code `UNSUPPORTED_POLICY`.
+Disabling a loader that the policy requires is rejected at configuration time.
+
 ## Validation policy and supported PKI
 
 The validator first builds and validates a path to a configured trust anchor,
@@ -235,27 +290,14 @@ then checks revocation for the leaf and every intermediate. The configured
 anchor itself is not checked for revocation; applications control trust in it
 by adding or removing it from `trustAnchors` when creating a validator.
 
-For each certificate, sources advertised in its OCSP AIA and CRL Distribution
-Points extensions are tried in this order:
-
-1. Try OCSP addresses first.
-2. If an attempt fails or cannot establish status, try the next source,
-   continuing with CRL addresses after OCSP addresses.
-3. The first authenticated, current `good` or `revoked` result ends the search
-   for that certificate. `revoked` fails validation immediately; `good` allows
-   validation to continue with the next certificate in the path.
-4. If no source establishes status, return `REVOCATION_STATUS_UNKNOWN`.
-
-OCSP-first is this library's policy, not a UDAP requirement. It queries status
-for the individual certificate before falling back to downloading a CRL.
-Sources are alternatives: the validator does not query all of them or reconcile
-conflicting results after obtaining a usable answer.
-
-This is a fail-closed policy: unavailable endpoints, missing endpoints, disabled
-mechanisms, invalid signatures, expired evidence, or unsupported evidence never
-count as proof that a certificate is not revoked. Another usable source may
-still establish status. Disabling both CRL and OCSP does not bypass revocation
-validation for non-anchor certificates.
+For each certificate, the compiled policy selects mechanisms from
+`sourceOrder` and determines whether any, CRL, OCSP, or both must establish a
+good status. A later certificate's success cannot compensate for an earlier
+certificate's unknown or revoked status. This is a fail-closed policy:
+unavailable endpoints, missing endpoints, disabled mechanisms, invalid
+signatures, expired evidence, or unsupported evidence never count as proof that
+a certificate is not revoked. Disabling both CRL and OCSP does not bypass
+revocation validation for non-anchor certificates.
 
 | Evidence                                                 | Current support                                                                                |
 | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |

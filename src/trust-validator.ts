@@ -1,19 +1,17 @@
 import { X509Certificate } from "node:crypto";
 import type { CacheStore } from "./cache.ts";
 import type { CertificateInput } from "./certificate-path.ts";
-import type { CrlValidationResult } from "./crl.ts";
 import type { DiagnosticCallback } from "./diagnostics.ts";
+import { invalidPolicy } from "./errors.ts";
+import { type EvidenceSummary, requiredMechanisms } from "./evidence.ts";
+import { collectCertificateEvidence } from "./evidence-collector.ts";
 import {
   createHttpLoaders,
   type HttpOptions,
   type OcspLoadOptions
 } from "./http-loaders.ts";
 import type { ValidatedLeafCertificate } from "./leaf-certificate.ts";
-import type { OcspValidationResult } from "./ocsp.ts";
-import {
-  createInlinePkiEngine,
-  type PreparedCertificate
-} from "./pki-engine.ts";
+import { createInlinePkiEngine } from "./pki-engine.ts";
 import {
   compileTrustPolicy,
   DEFAULT_TRUST_POLICY,
@@ -45,17 +43,6 @@ export type ValidationFailureCode =
   | "CERTIFICATE_REVOKED"
   | "REVOCATION_STATUS_UNKNOWN";
 
-export interface EvidenceSummary {
-  certificateIndex: number;
-  mechanism: "crl" | "ocsp";
-  status: "good" | "revoked";
-  authenticated: true;
-  fresh: true;
-  thisUpdateMs: number;
-  nextUpdateMs: number;
-  checkedAtMs: number;
-}
-
 export type ValidationResult =
   | {
       valid: true;
@@ -80,10 +67,6 @@ export interface TrustValidator {
   verify(options: VerifyOptions): Promise<ValidationResult>;
 }
 
-type CertificateRevocation =
-  | { status: "good" | "revoked"; evidence: EvidenceSummary }
-  | { status: "unknown"; message: string };
-
 export function createTrustValidator({
   trustAnchors,
   policy: policyInput,
@@ -107,6 +90,20 @@ export function createTrustValidator({
   const defaults = createHttpLoaders(http);
   const crlLoader = loadCrl ?? defaults.loadCrl;
   const ocspLoader = loadOcsp ?? defaults.loadOcsp;
+  const mandatory =
+    policy.revocation.requiredEvidence === "any"
+      ? []
+      : requiredMechanisms(policy.revocation.requiredEvidence);
+  if (mandatory.includes("crl") && !crlLoader) {
+    throw invalidPolicy(
+      "The policy requires CRL evidence but the CRL loader is disabled"
+    );
+  }
+  if (mandatory.includes("ocsp") && !ocspLoader) {
+    throw invalidPolicy(
+      "The policy requires OCSP evidence but the OCSP loader is disabled"
+    );
+  }
   const checker = createRevocationChecker({
     cache,
     maxCacheAgeMs,
@@ -114,82 +111,6 @@ export function createTrustValidator({
     now,
     onDiagnostic
   });
-
-  async function checkCertificateRevocation(
-    prepared: PreparedCertificate,
-    certificateIndex: number,
-    checkDateMs?: number
-  ): Promise<CertificateRevocation> {
-    const attempts: Array<{
-      mechanism: "crl" | "ocsp";
-      run: () => Promise<CrlValidationResult | OcspValidationResult>;
-    }> = [];
-    if (ocspLoader) {
-      for (const url of prepared.ocspUrls) {
-        attempts.push({
-          mechanism: "ocsp",
-          run: () =>
-            checker.checkOcsp({
-              certificateDer: prepared.der,
-              issuerDer: prepared.issuerDer!,
-              source: url,
-              certificateIndex,
-              checkDateMs,
-              ocspRequestDer: prepared.ocspRequestDer!,
-              load: () =>
-                ocspLoader({
-                  url,
-                  certificate: Uint8Array.from(prepared.der),
-                  issuerCertificate: Uint8Array.from(prepared.issuerDer!)
-                })
-            })
-        });
-      }
-    }
-    if (crlLoader) {
-      for (const url of prepared.crlUrls) {
-        attempts.push({
-          mechanism: "crl",
-          run: () =>
-            checker.checkCrl({
-              certificateDer: prepared.der,
-              issuerDer: prepared.issuerDer!,
-              source: url,
-              certificateIndex,
-              checkDateMs,
-              load: () => crlLoader(url)
-            })
-        });
-      }
-    }
-
-    let message =
-      "No usable CRL or OCSP source is configured for this certificate";
-    for (const attempt of attempts) {
-      try {
-        const result = await attempt.run();
-        if (result.status !== "unknown") {
-          return {
-            status: result.status,
-            evidence: {
-              certificateIndex,
-              mechanism: attempt.mechanism,
-              status: result.status,
-              authenticated: true,
-              fresh: true,
-              thisUpdateMs: result.thisUpdate.getTime(),
-              nextUpdateMs: result.nextUpdate.getTime(),
-              checkedAtMs: result.checkedAt.getTime()
-            }
-          };
-        }
-        message = result.message;
-      } catch {
-        message = "Unable to load or validate certificate revocation data";
-      }
-    }
-    return { status: "unknown", message };
-  }
 
   return {
     async verify({
@@ -221,11 +142,15 @@ export function createTrustValidator({
       // The last path entry is the configured trust anchor.
       const evidence: EvidenceSummary[] = [];
       for (let index = 0; index < path.certificates.length - 1; index++) {
-        const revocation = await checkCertificateRevocation(
-          path.certificates[index],
-          index,
-          explicitCheckDateMs
-        );
+        const revocation = await collectCertificateEvidence({
+          policy,
+          checker,
+          prepared: path.certificates[index],
+          certificateIndex: index,
+          checkDateMs: explicitCheckDateMs,
+          crlLoader: crlLoader || undefined,
+          ocspLoader: ocspLoader || undefined
+        });
         if (revocation.status === "revoked") {
           return {
             valid: false,
@@ -247,7 +172,7 @@ export function createTrustValidator({
             policyVersion: policy.version
           };
         }
-        evidence.push(revocation.evidence);
+        evidence.push(...revocation.evidence);
       }
 
       return {
