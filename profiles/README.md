@@ -40,5 +40,5 @@ registry.register({
 - Do not put private keys in this tree. Only public certificate fixtures or
   host-approved public trust bundles belong in `anchors/`.
 - A profile directory is configuration, not a statement of compliance. Do not
-  label a profile as compliant with a real external framework or community
+  label a profile as compliant with a real external framework
   without its current requirements and local approval.

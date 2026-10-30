@@ -3,20 +3,33 @@
 Validate X.509 certificate chains and certificate revocation status in Node.js.
 Requires Node.js 24 or later.
 
+The validator builds a path to an explicitly configured trust anchor, checks
+signatures, validity periods, CA constraints, name constraints, and revocation
+evidence, then applies a local validation profile. Unknown or unusable
+revocation evidence never becomes success.
+
+- DER or PEM certificate input.
+- CRL and OCSP verification signed by the certificate issuer.
+- Fail-closed revocation requirements with explicit evidence choices.
+- Immutable validation profiles with explicit capabilities and rules.
+- Concurrent per-certificate evidence collection with authenticated-revoked
+  early exit and `AbortSignal` cancellation.
+- Bounded shared evidence provider with per-origin limits and single-flight.
+- Raw DER evidence cache and bounded parsed CRL index cache.
+- Optional Piscina worker engine on a separate entry point.
+- Structured `findings` for diagnostics and audit.
+
 ## Quick start
 
 ```sh
 npm install x509-trust
 ```
 
-Worker execution is an optional subpath and requires installing `piscina`:
+Worker execution is optional and requires `piscina`:
 
 ```sh
 npm install piscina
 ```
-
-Worker API migration: import `createWorkerPkiEngine` from `x509-trust/worker`; it is
-no longer exported by the main `x509-trust` entry point.
 
 ```typescript
 import { createTrustValidator } from "x509-trust";
@@ -36,19 +49,17 @@ if (result.valid) {
 }
 ```
 
-Create a validator once and reuse it across requests. Certificates can be PEM
-strings or DER byte arrays. Supply the leaf certificate first, followed by its
-intermediates; the root can be omitted. Only configured `trustAnchors` establish
-trust: including a root in the supplied chain does not make it trusted.
+Create a validator once and reuse it across requests. Certificates may be PEM
+strings or DER byte arrays. Supply the leaf first, followed by intermediates;
+the trust anchor may be omitted from the chain. Only configured `trustAnchors`
+establish trust: including a root in the supplied chain does not make it trusted.
 
 ## API
 
-These types describe the public API and can be imported from `x509-trust`.
-The package also exports `createTrustValidator()`, `createValidationProfileRegistry()`,
-`createEvidenceProvider()`, `createMemoryCache()`,
-`getUriSubjectAlternativeNames()`, `compileValidationProfile()`, `ProfileError`,
-`ResourceLimitError`, and the profile/capability/provider types. Worker APIs
-are available only from `x509-trust/worker`.
+Public entry points:
+
+- `x509-trust` — validator, profiles, registry, evidence provider, diagnostics.
+- `x509-trust/worker` — optional Piscina-backed PKI engine.
 
 ```typescript
 type CertificateInput = string | Uint8Array;
@@ -71,37 +82,6 @@ interface TrustValidatorOptions {
   onDiagnostic?: DiagnosticCallback;
 }
 
-interface CrlIndexCacheOptions {
-  maxEntries?: number;
-  maxBytes?: number;
-}
-
-interface CrlLoadOptions {
-  signal?: AbortSignal;
-  issuerCertificate?: Uint8Array;
-}
-
-interface OcspLoadOptions {
-  url: string;
-  certificate: Uint8Array;
-  issuerCertificate: Uint8Array;
-  signal?: AbortSignal;
-  requestDer?: Uint8Array;
-}
-
-interface HttpOptions {
-  timeoutMs?: number;
-  maxResponseBytes?: number;
-  allowedOrigins?: readonly string[];
-  allowPrivateAddresses?: boolean;
-}
-
-interface CacheStore {
-  get(key: string): Promise<string | null>;
-  set(key: string, value: string, ttlMs: number): Promise<void>;
-  delete(key: string): Promise<void>;
-}
-
 interface VerifyOptions {
   certificateChain: readonly CertificateInput[];
   checkDate?: Date;
@@ -122,29 +102,276 @@ function createMemoryCache(options?: {
 }): CacheStore;
 ```
 
-| Option                             | Default                        | Purpose                                                                                |
-| ---------------------------------- | ------------------------------ | -------------------------------------------------------------------------------------- |
-| `trustAnchors`                   | Required                       | Nonempty set of explicitly trusted certificates, copied when the validator is created. |
-| `loadCrl`                        | Built-in HTTP loader           | Override CRL retrieval, or set `false` to disable CRL checks.                        |
-| `loadOcsp`                       | Built-in HTTP loader           | Override OCSP retrieval, or set `false` to disable OCSP checks.                      |
-| `http.timeoutMs`                 | `5000`                       | Deadline for each HTTP request, including reading its body.                            |
-| `http.maxResponseBytes`          | `5242880` (5 MiB)            | Maximum response body size per request.                                                |
-| `http.allowedOrigins`            | No origin allowlist            | Restrict retrieval to the listed origins; public-address restrictions still apply.     |
-| `http.allowPrivateAddresses`     | `false`                      | Allow private or loopback destinations for internal PKI or local use.                  |
-| `cache`                          | In-memory, 256 entries         | Storage for verified CRL and OCSP evidence.                                            |
-| `maxCacheAgeMs`                  | `3600000` (1 hour)           | Maximum evidence cache age, also bounded by `nextUpdate`.                            |
-| `cacheKeyPrefix`                 | `"x509-trust:revocation:v1"` | Namespace for cache entries.                                                           |
-| `now`                            | `Date.now`                   | Clock returning epoch milliseconds.                                                    |
-| `onDiagnostic` | No callback | Receive detailed revocation and cache diagnostics using your application's logger. |
-| `verify().certificateChain`      | Required                       | Leaf certificate followed by intermediates.                                            |
-| `verify().checkDate`             | Current time from `now`      | Date at which to validate the path and revocation evidence.                            |
-| `verify().signal`                | None                         | AbortSignal that cancels this verification; rejection is an `AbortError`.              |
-| `provider`                       | Per-validator provider       | Shared `EvidenceProvider` that applies app-wide request bounds and single-flight.      |
-| `deadlineMs`                     | `60000` (60 seconds)         | Overall evidence-phase deadline; exceeding it returns `RESOURCE_LIMIT_EXCEEDED`.       |
-| `createMemoryCache().maxEntries` | `256`                        | Maximum entries; the oldest inserted entry is evicted when full.                       |
-| `createMemoryCache().now`        | `Date.now`                   | Clock used to expire entries in that memory store.                                     |
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `trustAnchors` | Required | Nonempty set of explicitly trusted certificates, copied at construction. |
+| `profile` | Built-in strict profile | Local validation profile; compiled and frozen at construction. |
+| `rules` | None | Trusted custom rule functions. |
+| `loadCrl` | Built-in HTTP loader | Override CRL retrieval, or `false` to disable CRL checks. |
+| `loadOcsp` | Built-in HTTP loader | Override OCSP retrieval, or `false` to disable OCSP checks. |
+| `provider` | Per-validator provider | Shared provider for request bounds and single-flight. |
+| `engine` | Inline engine | Worker-backed engine from `x509-trust/worker`. |
+| `crlIndexCache` | Enabled, 8 entries / 64 MiB | Parsed CRL index cache; `false` disables it. |
+| `http.timeoutMs` | `5000` | Deadline for each HTTP request, including reading its body. |
+| `http.maxResponseBytes` | `5242880` (5 MiB) | Maximum response body size per request. |
+| `http.allowedOrigins` | No allowlist | Restrict retrieval to the listed origins. |
+| `http.allowPrivateAddresses` | `false` | Allow private or loopback destinations. |
+| `deadlineMs` | `60000` | Overall evidence-phase deadline. |
+| `cache` | In-memory, 256 entries | Storage for verified CRL and OCSP evidence. |
+| `maxCacheAgeMs` | `3600000` (1 hour) | Maximum evidence cache age, also bounded by `nextUpdate`. |
+| `cacheKeyPrefix` | `"x509-trust:revocation:v1"` | Cache namespace. |
+| `now` | `Date.now` | Clock returning epoch milliseconds. |
+| `onDiagnostic` | None | Receive cache and revocation diagnostics. |
+| `verify().certificateChain` | Required | Leaf certificate followed by intermediates. |
+| `verify().checkDate` | `now()` | Date at which to validate the path and evidence. |
+| `verify().signal` | None | Cancels verification; rejection is an `AbortError`. |
 
-### Results and failure codes
+### Validation profiles
+
+```typescript
+type ProfileVersion = string | number;
+
+interface ProfileSource {
+  uri: string;
+  version?: string;
+  effectiveDate?: string;
+}
+
+type ProfileCapability =
+  | "revocation:any"
+  | "revocation:crl"
+  | "revocation:ocsp"
+  | "revocation:both"
+  | "revocation:non-anchor-chain"
+  | "revocation:require-next-update"
+  | "revocation:zero-clock-skew"
+  | "rules:leaf-key-usage"
+  | "rules:leaf-extended-key-usage"
+  | "rules:required-certificate-policy-oids"
+  | "rules:max-path-depth"
+  | "rules:required-rule-names";
+
+interface ValidationProfileInput {
+  id: string;
+  version: ProfileVersion;
+  /** Explicit ordering for latest-version selection. */
+  versionOrder?: number;
+  source: string | ProfileSource;
+  anchorSetId: string;
+  requiredCapabilities?: readonly ProfileCapability[];
+  revocation?: {
+    requiredEvidence?: "any" | "crl" | "ocsp" | "both";
+    sourceOrder?: readonly ("crl" | "ocsp")[];
+    onUnknown?: "reject";
+    scope?: "non-anchor-chain";
+    requireNextUpdate?: true;
+    clockSkewMs?: 0;
+  };
+  rules?: {
+    leafKeyUsage?: readonly KeyUsageName[];
+    leafExtendedKeyUsage?: readonly string[];
+    requiredCertificatePolicyOids?: readonly string[];
+    maxPathDepth?: number;
+    requiredRuleNames?: readonly string[];
+  };
+}
+```
+
+The profile is compiled, validated, deep-copied, and frozen when the validator is
+created. Mutating the caller's object afterwards has no effect.
+
+- `version` accepts a positive number or a non-empty string.
+- Numeric versions default `versionOrder` to the version number.
+- String versions require a positive integer `versionOrder`.
+- `source` accepts a URI string or `{ uri, version?, effectiveDate? }`.
+- `requiredCapabilities` is checked against `PROFILE_CAPABILITIES`.
+- `capabilities` on the compiled profile reports what the configuration actually
+  exercises.
+
+```typescript
+import { createTrustValidator } from "x509-trust";
+
+const validator = createTrustValidator({
+  trustAnchors: [rootCertificate],
+  profile: {
+    id: "example:strict",
+    version: "2026-01",
+    versionOrder: 1,
+    source: {
+      uri: "https://example.org/pki/profile",
+      version: "3.1",
+      effectiveDate: "2026-01-01"
+    },
+    anchorSetId: "example:root-2026",
+    requiredCapabilities: ["revocation:both"],
+    revocation: {
+      requiredEvidence: "both",
+      sourceOrder: ["crl", "ocsp"]
+    }
+  }
+});
+```
+
+Defaults:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `revocation.requiredEvidence` | `"any"` | `any`, `crl`, `ocsp`, or `both` must establish status. |
+| `revocation.sourceOrder` | `["ocsp", "crl"]` | Order in which advertised mechanisms are tried. |
+| `revocation.onUnknown` | `"reject"` | Unknown never becomes success. |
+| `revocation.scope` | `"non-anchor-chain"` | Every non-anchor certificate is checked. |
+| `revocation.requireNextUpdate` | `true` | Evidence must have a freshness boundary. |
+| `revocation.clockSkewMs` | `0` | No clock-skew allowance. |
+
+`sourceOrder` controls collection order. `requiredEvidence` decides which
+mechanisms must produce a good result:
+
+- `any`: the first authenticated, current good or revoked result establishes
+  status. Revoked always rejects.
+- `crl` / `ocsp`: only that mechanism satisfies the requirement. The other may
+  still be queried, and an authenticated revoked result from it still rejects.
+- `both`: both mechanisms must produce good results.
+
+Source URLs are tried in advertised order. Collection stops as soon as the
+requirement is satisfied; the library does not claim that unqueried sources agree
+with the returned result. Unknown, unavailable, unauthenticated, expired, and
+unsupported evidence never establish good status.
+
+Invalid profiles throw `ProfileError` with `INVALID_PROFILE`. A mandatory
+capability that the engine does not implement throws `UNSUPPORTED_PROFILE`.
+Disabling a loader that the profile requires is rejected at configuration time.
+
+### Profile files
+
+Profiles are local, reviewed, versioned data under `profiles/<profile-id>/`:
+
+```text
+profiles/
+├── default/
+│   └── profile.json
+└── example/
+    ├── profile.json
+    └── anchors/          # optional public trust bundle
+```
+
+`profiles/default/profile.json` mirrors the built-in strict default; the code
+constant `DEFAULT_VALIDATION_PROFILE` is authoritative. The library never
+downloads a profile from a request-supplied URI. `anchors/` may contain only
+public, host-approved certificates, never private keys. See
+[profiles/README.md](profiles/README.md).
+
+### Profile rules
+
+Declarative checks run after the path and all required revocation evidence
+succeed:
+
+```typescript
+profile.rules = {
+  leafKeyUsage: ["digitalSignature"],
+  leafExtendedKeyUsage: ["1.3.6.1.5.5.7.3.2"],
+  requiredCertificatePolicyOids: ["1.2.3.4"],
+  maxPathDepth: 3 // total certificates, including leaf and anchor
+};
+```
+
+`requiredCertificatePolicyOids` checks only the leaf certificate's policy
+extension. It does not perform full RFC 5280 policy-tree processing.
+`maxPathDepth` counts the leaf and the selected trust anchor. Requirements are
+ANDed; empty arrays are rejected.
+
+Hosts can register named rule functions as trusted program code:
+
+```typescript
+const rules = [
+  {
+    name: "application-check",
+    check(context: TrustRuleContext) {
+      return context.leaf.extendedKeyUsageOids?.includes(
+        "1.3.6.1.5.5.7.3.2"
+      )
+        ? { ok: true as const }
+        : { ok: false as const, message: "clientAuth usage is required" };
+    }
+  }
+];
+```
+
+A rule can reject a result but cannot turn a path, signature, time, revoked, or
+unknown evidence failure into success. Exceptions and unrecognized results are
+failures. Rule facts are frozen copies derived from the validated path.
+
+## Validation profile registry
+
+Use `createValidationProfileRegistry()` when trust anchors and profiles are
+selected by a locally registered `profileId` instead of by request input:
+
+```typescript
+import { createValidationProfileRegistry } from "x509-trust";
+
+const registry = createValidationProfileRegistry({
+  loadCrl: readCrlFromStorage,
+  loadOcsp: false
+});
+
+registry.register({
+  trustAnchors: [profileARoot],
+  profile: profileA,
+  rules: profileARules
+});
+
+registry.register({
+  trustAnchors: [profileBRoot],
+  profile: {
+    ...profileB,
+    version: 2
+  }
+});
+
+const result = await registry.verify({
+  profileId: "profile-a",
+  profileVersion: 2, // optional; highest registered version otherwise
+  certificateChain: [clientCertificate, intermediateCertificate]
+});
+```
+
+- `profile.id` is the registry key.
+- Each profile may register several versions.
+- `versionOrder` selects the latest version when `profileVersion` is omitted.
+- Duplicate profile version or duplicate `versionOrder` is rejected.
+- Registration stores immutable anchors, compiled profiles, and trusted rules.
+- `verify()` can select only a registered profile and version; it cannot supply
+  anchors, profiles, or rules.
+- Unknown profiles return `UNKNOWN_PROFILE`; unknown versions return
+  `UNKNOWN_PROFILE_VERSION`.
+- Each request selects its snapshot before awaiting validation, so registering a
+  new version does not change an in-flight request.
+- Successful registry results include `profileId` and `profileVersion`.
+
+Profiles are independent. The same certificate SAN can appear in two profiles
+whose trust anchors differ.
+
+### FHIR UDAP hosts
+
+The core package has no built-in UDAP vocabulary. A UDAP host maps
+its external framework identifier to a local `profileId` and registers approved
+anchors itself:
+
+```typescript
+const profileId = `udap:${frameworkIdentifier}`;
+
+registry.register({
+  trustAnchors: approvedUdapAnchors,
+  profile: { ...udapProfile, id: profileId }
+});
+
+await registry.verify({ profileId, certificateChain });
+```
+
+JWT `x5c`, `iss`/`aud`, OAuth, replay protection, and framework requirements
+remain application responsibilities. See
+[examples/udap/README.md](examples/udap/README.md).
+
+## Results and failure codes
 
 ```typescript
 type ValidationFailureCode =
@@ -225,7 +452,7 @@ type ValidationResult =
       evidence: EvidenceSummary[];
       findings: CertificateFindings[];
       profileId: string;
-      profileVersion: string | number;
+      profileVersion: ProfileVersion;
     }
   | {
       valid: false;
@@ -235,326 +462,86 @@ type ValidationResult =
       evidence?: EvidenceSummary[];
       findings?: CertificateFindings[];
       profileId?: string;
-      profileVersion?: string | number;
+      profileVersion?: ProfileVersion;
     };
 ```
 
-On success, `certificatePath` contains the validated path as DER bytes, leaf
-first and including the selected trust anchor. `trustAnchorFingerprint256` is
-that anchor's SHA-256 fingerprint. These fields let applications inspect the
-selected path or record which anchor established trust.
-
-`leafCertificate` is returned only after the path and every required revocation
-check succeed. It contains identity and key metadata, not profile or transport
-state. All byte fields are independent snapshots: changing them does not change
-the validator, its trust anchors, its cache, or a later result.
-
-- `publicKeySpkiDer` is the DER `SubjectPublicKeyInfo`; it imports directly with
-  Node.js `createPublicKey({ key, format: "der", type: "spki" })`.
-- `uriSubjectAlternativeNames` preserves URI SAN strings exactly, in certificate
-  order, without case or trailing-slash normalization.
-- `fingerprint256` is uppercase colon-separated SHA-256. `serialNumber` is
-  uppercase hex without colons or DER sign padding.
-- `notBeforeMs` and `notAfterMs` are Unix epoch milliseconds.
-- `subject` and `issuer` are display strings for diagnostics. Never compare
-  them for security decisions; path matching uses structured distinguished
-  names inside the validation engine.
-- `keyUsages` is a named BIT STRING set, not a list of OIDs. `keyUsages`,
-  `extendedKeyUsageOids`, and `certificatePolicyOids` are `undefined` when the
-  extension is absent. Present but malformed or duplicate extensions are
-  rejected rather than reported as absent.
-
-`evidence` lists the authenticated, fresh evidence that established each
-non-anchor certificate's status. It includes the certificate index, mechanism,
-status, the evidence `thisUpdate`/`nextUpdate`, and the time at which it was
-checked. A revoked failure includes the revoked evidence summary; failures that
-cannot authenticate evidence expose no positive evidence claim.
-
-`findings` is the diagnostic counterpart: one entry per non-anchor certificate
-whose evidence pipeline completed, containing the CRL and OCSP attempts that
-were actually made, including `unknown` attempts. An early authenticated-revoked
-result may include only the revoked certificate's findings because the other
-pipelines are cancelled. `authenticated` and `fresh` record the established facts;
-they are `false` for unknown/unusable evidence. Findings are for audit,
-diagnostics, and table-driven tests. They are not a trust decision and must not
-be used by callers to override the validation result.
-
-### Migrating from the top-level SAN field
-
-Earlier versions returned `result.leafUriSubjectAlternativeNames`. That duplicate
-field has been removed; use:
-
-```typescript
-const uris = result.leafCertificate.uriSubjectAlternativeNames;
-```
-
-The standalone `getUriSubjectAlternativeNames()` helper is unchanged and remains
-useful for parsing a certificate before validation.
-
-| Failure code                  | Meaning                                                                               |
-| ----------------------------- | ------------------------------------------------------------------------------------- |
-| `INVALID_CERTIFICATE`       | A supplied certificate could not be parsed.                                           |
-| `INVALID_CERTIFICATE_PATH`  | No valid path to a configured anchor was found, including signature or date failures. |
-| `CERTIFICATE_REVOKED`       | Authenticated evidence reports that a path certificate is revoked.                    |
-| `REVOCATION_STATUS_UNKNOWN` | Revocation status could not be established for a path certificate.                    |
-| `PROFILE_REJECTED`           | A registered profile rule rejected an otherwise valid result.                         |
-| `UNKNOWN_PROFILE`           | A registry request named a profile that is not locally registered.                    |
-| `UNKNOWN_PROFILE_VERSION`   | The profile exists but the requested version is not registered.                       |
-| `RESOURCE_LIMIT_EXCEEDED`   | The evidence request queue, queue wait, or overall verification deadline was exceeded. |
+| Failure code | Meaning |
+| --- | --- |
+| `INVALID_CERTIFICATE` | A supplied certificate could not be parsed. |
+| `INVALID_CERTIFICATE_PATH` | No valid path to a configured anchor was found, including signature or date failures. |
+| `CERTIFICATE_REVOKED` | Authenticated evidence reports that a path certificate is revoked. |
+| `REVOCATION_STATUS_UNKNOWN` | Revocation status could not be established. |
+| `PROFILE_REJECTED` | A profile rule rejected an otherwise valid result. |
+| `UNKNOWN_PROFILE` | A registry request named a profile that is not registered. |
+| `UNKNOWN_PROFILE_VERSION` | The profile exists but the requested version is not registered. |
+| `RESOURCE_LIMIT_EXCEEDED` | The request queue, queue wait, or overall deadline was exceeded. |
 
 Revocation failures include `certificateIndex`, the zero-based position in the
 validated path (`0` is the leaf). Use `code` for application decisions and
 `message` for diagnostic detail.
 
-Configuration errors are thrown rather than returned:
+Configuration errors are thrown:
 
-- `ProfileError` with `INVALID_PROFILE` for malformed profile, registry,
-  registration, or loader configuration.
+- `ProfileError` with `INVALID_PROFILE` for malformed profiles, registration, or
+  loader configuration.
 - `ProfileError` with `UNSUPPORTED_PROFILE` for a mandatory capability or rule
   name that has no implementation.
-- `TypeError` for invalid option values such as an invalid `checkDate`, an empty
-  anchor set, or a non-positive deadline.
-- Cancellation rejects with a `DOMException` whose name is `AbortError`.
+- `TypeError` for invalid option values.
+- Cancellation rejects with a `DOMException` named `AbortError`.
 
-None of these thrown errors, and none of the failure codes above, can enter the
-success path.
+None of these errors or failure codes can enter the success path.
 
-## Validation profiles
+On success, `certificatePath` contains the validated path as DER bytes, leaf
+first and including the selected anchor. `trustAnchorFingerprint256` is that
+anchor's SHA-256 fingerprint.
 
-`createTrustValidator({ trustAnchors, profile })` accepts an optional local
-validation profile. Omitting it selects the built-in strict default. The profile
-is compiled, validated, deep-copied, and frozen when the validator is created;
-mutating the caller's object afterwards has no effect.
+`leafCertificate` is returned only after the path and every required revocation
+check succeed. It contains identity and key metadata, not profile or transport
+state. Byte fields are independent snapshots.
 
-```typescript
-const validator = createTrustValidator({
-  trustAnchors: [rootCertificate],
-  profile: {
-    id: "example:strict",
-    version: "2026-01",
-    versionOrder: 1,
-    source: {
-      uri: "https://example.org/pki/profile",
-      version: "3.1",
-      effectiveDate: "2026-01-01"
-    },
-    anchorSetId: "example:root-2026",
-    requiredCapabilities: ["revocation:both"],
-    revocation: {
-      requiredEvidence: "both",
-      sourceOrder: ["crl", "ocsp"]
-    }
-  }
-});
-```
+- `publicKeySpkiDer` imports with
+  `createPublicKey({ key, format: "der", type: "spki" })`.
+- `uriSubjectAlternativeNames` preserves URI SAN strings in certificate order.
+- `fingerprint256` is uppercase colon-separated SHA-256; `serialNumber` is
+  uppercase hex without separators.
+- `notBeforeMs` and `notAfterMs` are Unix epoch milliseconds.
+- `subject` and `issuer` are display strings. Never use them for security
+  decisions; path matching uses structured names inside the engine.
+- `keyUsages` is a named BIT STRING set. Optional extensions are `undefined`
+  when absent; malformed or duplicate extensions are rejected.
 
-Profile identity and provenance:
+`evidence` lists the authenticated, fresh evidence that established each
+non-anchor certificate's status. `findings` records the CRL and OCSP attempts
+that were actually made, including `unknown` attempts. An authenticated-revoked
+early result may include only the revoked certificate's findings. Findings are
+for audit, diagnostics, and tests; they are not a trust decision.
 
-- `version` accepts a number or a non-empty string.
-- Numeric versions default `versionOrder` to the version number.
-- String versions require an explicit positive-integer `versionOrder`; the
-  registry uses it to select the latest version.
-- `source` accepts a legacy string or `{ uri, version?, effectiveDate? }`.
-- `requiredCapabilities` is validated against `PROFILE_CAPABILITIES`. The
-  compiled profile also exposes the capabilities actually exercised as
-  `capabilities`.
+## Supported PKI and evidence
 
-The compiled profile has these defaults:
+The validator builds and validates a path to a configured trust anchor, then
+checks revocation for the leaf and every intermediate. The configured anchor
+itself is not checked for revocation; applications control trust in it through
+`trustAnchors`.
 
-| Field                              | Default        | Meaning |
-| ---------------------------------- | -------------- | ------- |
-| `revocation.requiredEvidence`      | `"any"`        | `any`, `crl`, `ocsp`, or `both` must establish status. |
-| `revocation.sourceOrder`           | `["ocsp","crl"]` | Order in which advertised mechanisms are tried. |
-| `revocation.onUnknown`             | `"reject"`     | Unknown never becomes success. |
-| `revocation.scope`                 | `"non-anchor-chain"` | Every non-anchor certificate is checked. |
-| `revocation.requireNextUpdate`     | `true`         | Evidence must have a freshness boundary. |
-| `revocation.clockSkewMs`           | `0`            | No clock-skew allowance. |
+| Evidence | Support |
+| --- | --- |
+| Complete CRLs signed directly by the certificate issuer | Supported. |
+| OCSP responses signed directly by the certificate issuer | Supported. |
+| Delegated OCSP responders | Not supported. |
+| Delta CRLs | Not supported. |
+| Scoped or indirect CRLs | Not supported. |
+| OCSP responses without `nextUpdate` | Not accepted; treated as unknown. |
 
-### Profile files
-
-Profiles live outside `src/`, under `profiles/<profile-id>/`:
-
-```text
-profiles/
-├── default/
-│   └── profile.json
-└── example/
-    ├── profile.json
-    └── anchors/          # optional host-approved public trust bundle
-```
-
-`profiles/default/profile.json` mirrors the built-in strict default and is kept in
-sync by a test. The code constant `DEFAULT_VALIDATION_PROFILE` remains authoritative.
-Profiles are local reviewed data; the library never downloads a profile from a
-request-supplied URI. `anchors/` may contain only public, host-approved
-certificates—never private keys. See [profiles/README.md](profiles/README.md).
-
-`sourceOrder` controls collection order; `requiredEvidence` independently decides
-which mechanisms must produce a good result:
-
-- `any`: the first authenticated, current good or revoked result establishes
-  status. Revoked always rejects.
-- `crl` / `ocsp`: only that mechanism can satisfy the requirement. The other
-  mechanism may still be queried in `sourceOrder` and an authenticated revoked
-  result from it still rejects, but its good status is not sufficient.
-- `both`: both mechanisms must produce good results. Revoked from either
-  mechanism rejects immediately.
-
-Source URLs for each mechanism are tried in advertised order. Collection stops
-as soon as the requirement is satisfied, so this library does not claim that
-unqueried sources agree with the returned result. Unknown, unavailable,
-unauthenticated, expired, and unsupported evidence never establish good.
-
-Invalid profile objects throw a `ProfileError` with code `INVALID_PROFILE`; a
-mandatory capability that is not implemented throws code `UNSUPPORTED_PROFILE`.
-Disabling a loader that the profile requires is rejected at configuration time.
-
-### Profile rules
-
-Policies can require declarative checks on the validated result:
-
-```typescript
-profile.rules = {
-  leafKeyUsage: ["digitalSignature"],
-  leafExtendedKeyUsage: ["1.3.6.1.5.5.7.3.2"],
-  requiredCertificatePolicyOids: ["1.2.3.4"],
-  maxPathDepth: 3 // total certificates, including leaf and anchor
-};
-```
-
-`requiredCertificatePolicyOids` checks only the leaf certificate's policy extension. It
-does not claim or perform full RFC 5280 policy-tree processing. `maxPathDepth`
-counts the leaf and the selected trust anchor. All requirements are ANDed and
-empty arrays are rejected.
-
-Hosts can also register named rule functions as trusted program code:
-
-```typescript
-const rules = [
-  {
-    name: "application-check",
-    check(context: TrustRuleContext) {
-      return context.leaf.extendedKeyUsageOids?.includes(
-        "1.3.6.1.5.5.7.3.2"
-      )
-        ? { ok: true as const }
-        : { ok: false as const, message: "clientAuth usage is required" };
-    }
-  }
-];
-```
-
-Rules run only after the path and all required revocation evidence succeed. A
-rule can reject a result, but cannot turn a path, signature, time, revoked, or
-unknown evidence failure into success. Exceptions and unrecognized rule results
-are failures. Rule facts are frozen copies derived from the validated path.
-
-## Validation profile registry
-
-Use `createValidationProfileRegistry()` when trust anchors and profiles are selected by a
-locally registered `profileId` instead of by request input:
-
-```typescript
-const registry = createValidationProfileRegistry({
-  loadCrl: readCrlFromStorage,
-  loadOcsp: false
-});
-
-registry.register({
-  trustAnchors: [profileARoot],
-  profile: profileA,
-  rules: profileARules
-});
-
-registry.register({
-  trustAnchors: [profileBRoot],
-  profile: {
-    ...profileB,
-    version: 2
-  }
-});
-
-const result = await registry.verify({
-  profileId: "profile-a",
-  profileVersion: 2, // optional; the highest registered version otherwise
-  certificateChain: [clientCertificate, intermediateCertificate]
-});
-```
-
-Profiles are independent. The same certificate SAN can appear in two profiles
-whose trust anchors differ, and each profile can register several versions. The
-registry stores immutable anchors, compiled profiles, and trusted rules.
-`verify()` input can select only a registered `profileId` and optional version; it
-cannot supply anchors, profiles, or rules. Unknown profiles return
-`UNKNOWN_PROFILE` and do not fall back to another profile or to a default
-validator. Unknown versions return `UNKNOWN_PROFILE_VERSION`.
-
-Registering the same profile id and version twice throws
-`INVALID_PROFILE`; a failed registration is not partially stored. Each request
-selects its snapshot before awaiting validation, so registering a new version
-does not change an in-flight request. Successful registry results include `profileId` and `profileVersion`.
-
-### FHIR UDAP hosts
-
-The core package does not embed UDAP or external community vocabulary. A UDAP
-host maps its external framework identifier to a local `profileId` and registers
-approved anchors itself:
-
-```typescript
-const profileId = `udap:${frameworkIdentifier}`;
-
-registry.register({
-  trustAnchors: approvedUpstreamAnchors,
-  profile: { ...udapProfile, id: profileId }
-});
-
-await registry.verify({ profileId, certificateChain });
-```
-
-JWT `x5c`, `iss`/`aud`, OAuth, replay protection, and framework policy content
-remain application responsibilities. See
-[examples/udap/README.md](examples/udap/README.md).
-
-## Validation profiles and supported PKI
-
-The validator first builds and validates a path to a configured trust anchor,
-then checks revocation for the leaf and every intermediate. The configured
-anchor itself is not checked for revocation; applications control trust in it
-by adding or removing it from `trustAnchors` when creating a validator.
-
-For each certificate, the compiled profile selects mechanisms from
-`sourceOrder` and determines whether any, CRL, OCSP, or both must establish a
-good status. A later certificate's success cannot compensate for an earlier
-certificate's unknown or revoked status. This is a fail-closed profile:
-unavailable endpoints, missing endpoints, disabled mechanisms, invalid
-signatures, expired evidence, or unsupported evidence never count as proof that
-a certificate is not revoked. Disabling both CRL and OCSP does not bypass
-revocation validation for non-anchor certificates.
-
-| Evidence                                                 | Current support                                                                                |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Complete CRLs signed directly by the certificate issuer  | Supported, without scope restrictions.                                                         |
-| OCSP responses signed directly by the certificate issuer | Supported.                                                                                     |
-| Delegated OCSP responders                                | Not supported; a separate authorized responder certificate cannot currently establish status.  |
-| Delta CRLs                                               | Not supported; changes cannot currently be combined with a base CRL.                           |
-| Scoped or indirect CRLs                                  | Not supported; restricted coverage or a separate CRL issuer cannot currently establish status. |
-| OCSP responses without `nextUpdate`                    | Not accepted; treated as unknown, allowing CRL fallback.                                       |
-
-OCSP permits omitting `nextUpdate`, but this verifier requires it to set an
-explicit freshness boundary. This is a library restriction, not an OCSP
-requirement. Both CRL and OCSP evidence must have a usable `nextUpdate`.
-
-Before using the library with a validation profile or CA, confirm that its PKI
-publishes evidence within this supported scope. Rejecting unsupported evidence
-avoids accepting an unverified status, but can also reject otherwise valid
-certificates.
+Both CRL and OCSP evidence must have a usable `nextUpdate`. This is a library
+freshness requirement. Before using the library with a CA, confirm that its PKI
+publishes evidence within this supported scope.
 
 ## Shared evidence provider
 
-By default each validator creates its own evidence provider and downloads with
-conservative finite limits. To enforce application-wide limits across several
-validators or profiles, create one provider explicitly and pass it to each
-validator or to the registry:
+By default each validator creates its own evidence provider with finite limits.
+To enforce application-wide limits across validators or profiles, create one
+provider explicitly:
 
 ```typescript
 import {
@@ -578,34 +565,32 @@ const validator = createTrustValidator({
 });
 ```
 
-| Provider option      | Default | Meaning |
-| -------------------- | ------- | ------- |
-| `maxActiveRequests`  | `8`     | Maximum simultaneous evidence downloads across the provider. |
-| `maxQueuedRequests`  | `32`    | Maximum requests waiting for a slot; excess is rejected. |
-| `maxActivePerOrigin` | `4`     | Maximum simultaneous downloads per URL origin. |
-| `queueTimeoutMs`     | `30000` | Maximum time a request may wait for a slot. |
+| Provider option | Default | Meaning |
+| --- | --- | --- |
+| `maxActiveRequests` | `8` | Simultaneous evidence downloads across the provider. |
+| `maxQueuedRequests` | `32` | Requests waiting for a slot; excess is rejected. |
+| `maxActivePerOrigin` | `4` | Simultaneous downloads per URL origin. |
+| `queueTimeoutMs` | `30000` | Maximum time waiting for a slot. |
 
 Queue-full, queue-timeout, and verification-deadline conditions return
-`RESOURCE_LIMIT_EXCEEDED`. They never become a good or unknown status.
+`RESOURCE_LIMIT_EXCEEDED`.
 
 The provider runs single-flight only for raw downloads. A CRL flight is keyed by
-URL, issuer, and the provider instance; an OCSP flight also includes the target
-certificate and the request DER. Different provider instances, even with the
-same URL, do not share work, which keeps separate loader, origin, credential, or
-SSRF configurations isolated. Function source text is never used as identity.
+URL, issuer, and provider instance; an OCSP flight also includes the target
+certificate and request DER. Different provider instances do not share work, so
+separate loader, origin, or SSRF configurations stay isolated.
 
-Each waiting verification can cancel independently. A cancel removes only that
-waiter; when the last waiter leaves, the underlying request aborts. Successful
-and failed flights are always removed so a later request can retry. A shared CRL
-download is still evaluated separately for each certificate; a `good` result
-for one certificate never becomes another certificate's status.
+Each waiter can cancel independently. A cancel removes only that waiter; when
+the last waiter leaves, the request aborts. Successful and failed flights are
+removed so later requests can retry. A shared CRL download is evaluated
+separately for each certificate; a good result for one certificate never becomes
+another certificate's status.
 
 ## Optional worker execution
 
-PKI.js path, CRL, and OCSP computation runs inline by default. When a host needs
-to keep CPU-heavy evidence validation off the main thread, create a bounded,
-reusable Piscina pool and pass its engine to one or more validators or to a
-registry:
+PKI.js path, CRL, and OCSP computation runs inline by default. To move CPU-heavy
+work off the main thread, create a bounded, reusable Piscina pool and pass its
+engine to validators or a registry:
 
 ```typescript
 import { createTrustValidator } from "x509-trust";
@@ -627,53 +612,43 @@ const validator = createTrustValidator({
 await engine.close({ force: true });
 ```
 
-| Worker option   | Default | Meaning |
-| --------------- | ------- | ------- |
-| `maxThreads`    | `min(4, availableParallelism - 1)` | Maximum worker threads. |
-| `minThreads`    | `0`     | Threads kept ready at all times. |
-| `maxQueue`      | `maxThreads * 4` | Maximum tasks waiting for a worker. |
-| `idleTimeout`   | `30000` | Idle worker shutdown delay. |
-| `taskTimeoutMs` | `10000` | Per-task deadline; expiry aborts that worker task. |
-| `crlIndexCache` | enabled, 8 entries / 64 MiB | Worker-local parsed CRL index cache; `false` disables it. |
-| `filename`      | packaged worker | Override only when embedding the worker file yourself. |
+| Worker option | Default | Meaning |
+| --- | --- | --- |
+| `maxThreads` | `min(4, availableParallelism - 1)` | Maximum worker threads. |
+| `minThreads` | `0` | Threads kept ready. |
+| `maxQueue` | `maxThreads * 4` | Tasks waiting for a worker. |
+| `idleTimeout` | `30000` | Idle worker shutdown delay. |
+| `taskTimeoutMs` | `10000` | Per-task deadline. |
+| `crlIndexCache` | Enabled, 8 entries / 64 MiB | Worker-local parsed CRL index cache. |
+| `filename` | Packaged worker | Override only when embedding the worker file. |
 
-Only DER bytes and JSON-compatible DTOs cross the thread boundary. HTTP,
-bounded request scheduling, single-flight, caching, diagnostics, registered
-rules, and cancellation remain on the main thread. The pool is long-lived and
-can be shared by validators and registry profiles; it is not created per
-verification or per profile.
+Only DER bytes and JSON-compatible DTOs cross the thread boundary. HTTP, request
+scheduling, single-flight, caching, diagnostics, registered rules, and
+cancellation remain on the main thread. The pool is long-lived and can be shared
+by validators and registry profiles.
 
 Worker queue overflow and task timeouts return `RESOURCE_LIMIT_EXCEEDED`.
-Aborting a task terminates its worker; the pool replaces it, and subsequent
-tasks are unaffected. Aborting a queued task rejects it without terminating a
-running task. Inline and worker modes produce the same success and failure
-results for the same inputs.
+Aborting a task terminates its worker; the pool replaces it. Aborting a queued
+task rejects it without terminating a running task. Inline and worker modes
+produce the same success and failure results for the same inputs.
 
-Worker execution is optional and not the default. `docs/benchmark.md` records
-the local inline/worker comparison: the worker path clearly reduces main-thread
-event-loop delay for CPU-heavy path work, while small CRL/OCSP tasks can be
-slightly slower because of task dispatch overhead. Choose it from measurements
-on the target deployment, not from a blanket default.
+Worker execution is optional and not the default. Use
+[docs/benchmark.md](docs/benchmark.md) and
+[docs/concurrency-benchmark.md](docs/concurrency-benchmark.md) to choose based on
+measurements for the target deployment.
 
 ## Parsed CRL index cache
 
-In addition to the raw DER cache, the inline engine keeps a bounded parsed CRL
-index cache by default. It stores the parsed CRL object, a serial-number `Set`,
-and the unsupported-extension result, keyed by SHA-256 of the CRL DER.
+The inline engine keeps a bounded parsed CRL index cache by default. It stores
+the parsed CRL, a serial-number `Set`, and the unsupported-extension result,
+keyed by SHA-256 of the CRL DER.
 
-This cache is only an acceleration structure:
-
-- Every use still checks issuer, `thisUpdate`/`nextUpdate`, signature, and
-  certificate applicability.
-- The per-certificate `good`/`revoked` result is computed from the cached serial
-  set; it is never stored as a certificate status conclusion.
-- A changed CRL DER has a different key and is parsed separately.
-- Entries are bounded by both count and approximate bytes (defaults: 8 entries,
-  64 MiB) with LRU eviction; there is no independent trust TTL.
-- The raw DER cache remains the source for reauthentication and auditing.
-
-The cache is enabled by default for inline validators and for each worker-local
-engine. Disable or size it per validator/registry/worker engine:
+Every use still checks issuer, `thisUpdate`/`nextUpdate`, signature, and
+certificate applicability. The certificate result is computed from the cached
+serial set and is never stored as a status conclusion. A changed CRL DER has a
+different key and is parsed separately. Entries are bounded by count and
+approximate bytes (defaults: 8 entries, 64 MiB) with LRU eviction; there is no
+independent trust TTL.
 
 ```typescript
 createTrustValidator({
@@ -681,56 +656,46 @@ createTrustValidator({
   provider,
   crlIndexCache: { maxEntries: 16, maxBytes: 128 * 1024 * 1024 }
 });
-// or
-createTrustValidator({ trustAnchors: [rootCertificate], crlIndexCache: false });
+
+// Or disable it:
+createTrustValidator({
+  trustAnchors: [rootCertificate],
+  crlIndexCache: false
+});
 ```
 
-Worker caches are per worker thread and are not shared between workers; the raw
+Worker caches are per worker thread and are not shared between workers. The raw
 DER cache and HTTP single-flight remain on the main thread. The benchmark in
 [docs/benchmark.md](docs/benchmark.md) separates isolated CRL validation from
-full path plus evidence validation, because path validation can dominate the
-full-validator totals.
-
-In the latest local run, isolated validation of a 3,000-entry CRL improved from
-about 390 ms p50 without the index to about 2.3 ms p50 with it. Worker mode
-measured about 395 ms without the index and 8.7 ms with it; it kept event-loop
-p99 near 2 ms while inline indexed validation stayed tens of milliseconds. The
-index cache is therefore the first optimization for large repeated CRLs; worker
-mode remains a responsiveness tradeoff, not a throughput default.
+full path plus evidence validation.
 
 ## Concurrency, early rejection, and cancellation
 
-After the path validates, the leaf and every intermediate start revocation
-pipelines concurrently. Within each certificate, mechanisms and their URLs keep
-the profile's ordered, sequential fallback; there is no cross-certificate barrier
-before validating a response or trying the next source.
+After the path validates, leaf and intermediate revocation pipelines start
+concurrently. Within each certificate, mechanisms and URLs keep the profile's
+ordered, sequential fallback; there is no cross-certificate barrier.
 
-Overall success still requires every non-anchor certificate to satisfy the
-profile. The validator races only an authenticated `revoked` result against
-completion of all pipelines:
+Overall success requires every non-anchor certificate to satisfy the profile.
+The validator races only an authenticated `revoked` result against completion:
 
-- Once an authenticated revoked result is confirmed, `verify()` returns it
-  without waiting for stalled loaders or cache writes from other certificates.
+- Once an authenticated revoked result is confirmed, `verify()` returns without
+  waiting for stalled loaders or cache writes from other certificates.
 - A slow or signal-ignoring custom loader cannot delay that confirmed failure.
-- Results that arrive after the failure has been returned cannot override it.
-- Revoked cache writes run in the background with their rejections observed;
-  good cache writes keep the existing behavior.
+- Late results cannot override the returned failure.
+- Revoked cache writes run in the background with rejections observed.
 
 Pass an `AbortSignal` to `verify()` to cancel the whole verification. Built-in
 HTTP loaders combine it with their request deadline; custom loaders receive it
-as `options.signal` (CRL) or `options.signal` (OCSP) and should honor it. An
-external cancellation rejects with an `AbortError`; it never becomes a
-successful result.
+as `options.signal` and should honor it. External cancellation rejects with an
+`AbortError`.
 
 The library validates certificate trust and revocation. Applications remain
-responsible for their protocol rules, such as matching a JWT issuer to a
-certificate SAN, verifying the JWT signature and claims, and deciding what the
-authenticated party may access. A successful certificate result alone does not
-establish UDAP compliance.
+responsible for protocol rules such as matching a JWT issuer to a certificate
+SAN, verifying JWT signatures and claims, and deciding authorization.
 
 ## Reading URI subject alternative names
 
-Use `getUriSubjectAlternativeNames()` to extract URI entries from a certificate's
+`getUriSubjectAlternativeNames()` extracts URI entries from a certificate's
 Subject Alternative Name extension:
 
 ```typescript
@@ -739,15 +704,11 @@ import { getUriSubjectAlternativeNames } from "x509-trust";
 const uris = getUriSubjectAlternativeNames(clientCertificate);
 ```
 
-The function accepts a PEM string or DER bytes and returns URI entries in their
-original order, without normalization. Other name types are excluded. A missing
-SAN extension or one with no URI entries returns `[]`; invalid certificates or
-malformed SAN extensions throw errors. Parsing the structured extension preserves
-commas within URI values.
-
-Extraction does not validate trust, revocation, or JWT claims. Applications must
-validate the certificate and apply their protocol's issuer matching rules. When
-using Node.js `X509Certificate` objects, pass `certificate.raw`.
+It accepts PEM or DER and returns URI entries in original order without
+normalization. Other name types are excluded. A missing SAN or one with no URI
+entries returns `[]`; invalid certificates or malformed SAN extensions throw.
+Extraction does not validate trust, revocation, or JWT claims. When using a
+Node.js `X509Certificate` object, pass `certificate.raw`.
 
 ## Retrieving revocation evidence
 
@@ -760,8 +721,6 @@ restricts destinations to reduce SSRF exposure. Redirects and HTTP(S) URLs with
 embedded credentials or fragments are rejected. Only public IPv4 and
 global-unicast IPv6 destinations are permitted by default, with resolved
 addresses checked when establishing each connection.
-
-Use an origin allowlist when the CA endpoints are known:
 
 ```typescript
 const validator = createTrustValidator({
@@ -780,10 +739,10 @@ verification.
 
 ### Custom loaders and disabled mechanisms
 
-Supply `loadCrl` or `loadOcsp` to retrieve evidence through your own transport or
+Supply `loadCrl` or `loadOcsp` to retrieve evidence through another transport or
 from offline storage. Callbacks return DER bytes; OCSP callbacks receive the
-target certificate and its issuer as DER bytes. The library still validates
-the returned evidence.
+target certificate and issuer as DER bytes. The library still validates the
+returned evidence.
 
 ```typescript
 const validator = createTrustValidator({
@@ -793,21 +752,19 @@ const validator = createTrustValidator({
 });
 ```
 
-Here, `readCrlFromStorage` is an application-provided function. This example
-permits CRL checks only. Setting a loader to `false` disables that mechanism for
-the entire validator, even when certificates advertise its URLs. Omitting a
-loader uses the built-in HTTP implementation.
+Here, `readCrlFromStorage` is application-provided. This example permits CRL
+checks only. Setting a loader to `false` disables that mechanism for the entire
+validator, even when certificates advertise its URLs. Omitting a loader uses the
+built-in HTTP implementation.
 
-The `http` settings apply only to built-in loaders. Custom loaders own their
-network restrictions, timeouts, and size limits. For historical validation,
-`checkDate` changes the validation date but does not retrieve historical evidence;
-provide suitable evidence through custom loaders.
+`http` settings apply only to built-in loaders. Custom loaders own their network
+restrictions, timeouts, and size limits. `checkDate` changes the validation date
+but does not retrieve historical evidence; provide suitable evidence through
+custom loaders when validating at a past date.
 
 ## Diagnostics
 
-Pass `onDiagnostic` to send detailed revocation and cache events to your existing
-logger or monitoring system. The library does not log automatically or require
-a logging dependency.
+Pass `onDiagnostic` to send revocation and cache events to an existing logger:
 
 ```typescript
 const validator = createTrustValidator({
@@ -817,8 +774,6 @@ const validator = createTrustValidator({
   }
 });
 ```
-
-`logger` is supplied by the application. The exported diagnostic types are:
 
 ```typescript
 interface DiagnosticEvent {
@@ -842,46 +797,43 @@ type DiagnosticCallback = (event: DiagnosticEvent) => void | Promise<void>;
 For example, a `revocation_result` event may report `status: "unknown"` and
 `code: "OCSP_MISSING_NEXT_UPDATE"`, followed by a CRL attempt. These internal
 codes explain individual attempts; `verify()` still returns the public failure
-codes documented above. `revocation_error` reports a loading or validation
-exception without forwarding its raw error message. Cache events distinguish
-reuse, misses, discarded evidence, and storage failures.
+codes. `revocation_error` reports a loading or validation exception without
+forwarding raw error text. Cache events distinguish reuse, misses, discarded
+evidence, and storage failures.
 
-Events include the mechanism and certificate index but exclude certificate
-contents, evidence bytes, cache keys, and source URLs. Callbacks are invoked in
-check order; returned promises are not awaited. Synchronous exceptions and
-promise rejections from callbacks are ignored so diagnostics cannot change the
-validation result. Diagnostics describe evidence attempts and cache activity,
-not every validation outcome; a path failure or missing endpoints may produce
-no diagnostic events.
+Events include mechanism and certificate index but exclude certificate contents,
+evidence bytes, cache keys, and source URLs. Callbacks run in check order;
+returned promises are not awaited. Exceptions and rejections from callbacks are
+ignored so diagnostics cannot change validation. Diagnostics describe evidence
+attempts and cache activity, not every validation outcome.
 
 ## Caching
 
-The default cache holds up to 256 entries in memory. Reusing the validator lets
-repeated requests avoid downloading the same evidence. CRLs can be shared across
-certificates with the same issuer and CRL URL; OCSP entries also identify the
-individual certificate.
+The default evidence cache holds up to 256 entries in memory. Reusing the
+validator lets repeated requests avoid downloading the same evidence. CRLs can
+be shared across certificates with the same issuer and CRL URL; OCSP entries
+also identify the individual certificate.
 
-Only evidence that establishes `good` or `revoked` status is cached. Its expiry
-is the earlier of `nextUpdate` and the time it was cached plus `maxCacheAgeMs`
-(one hour by default). A cache hit does not extend that expiry. For example,
-evidence cached at 10:00 with `nextUpdate` at 12:00 expires at 11:00 under the
-default limit, even if used again at 10:30.
+Only evidence that establishes `good` or `revoked` status is cached. Expiry is
+the earlier of `nextUpdate` and the time cached plus `maxCacheAgeMs` (one hour by
+default). A cache hit does not extend expiry. Evidence cached at 10:00 with
+`nextUpdate` at 12:00 expires at 11:00 under the default limit, even if used
+again at 10:30.
 
 Cached evidence is revalidated for the certificate, issuer, and validation date
-on each use. Certificate paths are also validated on every request. Unknown
-results are not cached. Cache failures trigger fresh retrieval and validation;
-expired evidence is never used as a fallback. Caching introduces a delay before
-newly published revocation information is observed, so choose `maxCacheAgeMs`
-according to your deployment's freshness requirements.
+on each use. Certificate paths are validated on every request. Unknown results
+are not cached. Cache failures trigger fresh retrieval; expired evidence is
+never used as fallback. Caching introduces a delay before newly published
+revocation information is observed, so choose `maxCacheAgeMs` according to the
+deployment's freshness requirements.
 
 To change the memory limit, pass `createMemoryCache({ maxEntries: 1024 })` as
-`cache`. For shared storage, adapt an existing client to `CacheStore`. For example,
-with a connected Node Redis client:
+`cache`. For shared storage, adapt an existing client to `CacheStore`:
 
 ```typescript
 const validator = createTrustValidator({
   trustAnchors: [rootCertificate],
-  cacheKeyPrefix: "sahara:x509-trust:revocation:v1",
+  cacheKeyPrefix: "app:x509-trust:revocation:v1",
   cache: {
     get: (key) => redisClient.get(key),
     async set(key, value, ttlMs) {
@@ -895,110 +847,55 @@ const validator = createTrustValidator({
 ```
 
 The application owns the Redis connection. Cache values are strings and TTLs
-are expressed in milliseconds.
-
+are milliseconds.
 
 ## Benchmark
 
-`npm run benchmark` generates `docs/benchmark.md` from synthetic certificates,
-signed CRL/OCSP evidence, and a local HTTP server. It reports cold and warm
-validation, slow sources, early revocation, OCSP-to-CRL fallback, a shared
-single-flight burst, a large cached CRL, and inline/worker CPU path work. It is a
-measurement tool, not a unit-test gate.
+```sh
+npm run benchmark
+npm run benchmark:concurrency
+```
 
-`npm run benchmark:concurrency` generates `docs/concurrency-benchmark.md`. It
-runs closed-loop concurrent validations while a separate health endpoint is
-polled in the same process, reporting validation throughput, health latency,
-event-loop delay, CPU, RSS, and worker queue depth. Use it to compare inline and
-worker modes under application-like load; results are local measurements, not a
-production SLA.
+`benchmark` generates `docs/benchmark.md` from synthetic certificates, signed
+CRL/OCSP evidence, and a local HTTP server. It reports cold and warm validation,
+slow sources, early revocation, OCSP-to-CRL fallback, single-flight bursts, a
+large cached CRL, and inline/worker CPU path work.
 
-## Migration from the native/Rust branch
+`benchmark:concurrency` generates `docs/concurrency-benchmark.md`. It runs
+closed-loop concurrent validations while polling a health endpoint in the same
+process, reporting throughput, health latency, event-loop delay, CPU, RSS, and
+worker queue depth.
 
-This release is the pure TypeScript/Node implementation. It does not ship a
-native addon, `native/` directory, Cargo files, napi-rs bindings, `.node`
-binaries, or `@napi-rs/*` runtime dependency. Artifacts from the Rust branch are
-not used or packed.
-
-| Rust-branch export | This package |
-| ------------------ | ------------ |
-| `nativeValidateCertificatePath()` | `createTrustValidator().verify()` or `createValidationProfileRegistry().verify()` |
-| `nativeValidateCrl()` / `nativeValidateOcsp()` | Internal DER engine steps; callers use `verify()` |
-| `nativeCreateOcspRequest()` | Internal engine step; custom OCSP loaders receive `requestDer` context from the provider |
-| `nativeCertificateDer()` | Not public; pass PEM or DER `CertificateInput` to the validator |
-| `nativeUriSubjectAlternativeNames()` | `getUriSubjectAlternativeNames()` or `result.leafCertificate.uriSubjectAlternativeNames` |
-| `nativeRevocationEndpoints()` | Not public; the validator reads AIA/CRL distribution points during path preparation |
-
-For applications that persist or compare validation output, keep these formats
-in mind:
-
-- `fingerprint256` is uppercase colon-separated SHA-256.
-- `serialNumber` is uppercase hex without colons or DER sign padding.
-- Validity and evidence times are Unix epoch milliseconds.
-- `leafCertificate` nests identity/key metadata; the old top-level
-  `leafUriSubjectAlternativeNames` field is removed.
-- Failures are `ValidationResult` objects with the documented `code` union, not
-  mixed native result shapes.
-- Revocation summaries use `evidence[]` entries with `certificateIndex`,
-  `mechanism`, status, authentication/freshness facts, and epoch-millisecond
-  timestamps.
-
-Sahara and its databases were not modified by this work. Its Rust branch and
-credentials remain outside this repository.
+Benchmarks are measurement tools, not unit-test gates. Results are local
+measurements, not a production SLA.
 
 ## Project layout
-
-The source tree is grouped by responsibility:
 
 - `src/engine/` — PKI.js-backed DER/DTO engine, path/CRL/OCSP, certificate facts,
   CRL index cache.
 - `src/profile/` — profile schema/compiler, registered rules, registry.
 - `src/evidence/` — evidence decisions, concurrent collection, HTTP loaders,
   provider scheduling/single-flight, cache, revocation checker.
-- `src/validator/` — public validation orchestration and result assembly.
-- `src/workers/` — Piscina worker engine and DER/DTO worker task protocol.
+- `src/validator/` — validation orchestration and result assembly.
+- `src/workers/` — Piscina worker engine and DER/DTO worker protocol.
 - `profiles/` — local profile data; one directory per profile plus `default/`.
-- `examples/udap/` — host-side mapping example; not part of the package.
+- `examples/udap/` — host-side UDAP mapping example; not part of the package.
 - `src/index.ts`, `src/worker.ts` — public entry points.
-- Shared errors/diagnostics remain at `src/`.
+- `src/errors.ts`, `src/diagnostics.ts` — shared errors and diagnostics.
 
-## Migrating from the 0.4 policy/community API
-
-This is a breaking rename; there are no compatibility aliases.
-
-| Old | New |
-| --- | --- |
-| `TrustPolicyInput` / `CompiledTrustPolicy` | `ValidationProfileInput` / `CompiledValidationProfile` |
-| `compileTrustPolicy()` / `DEFAULT_TRUST_POLICY` | `compileValidationProfile()` / `DEFAULT_VALIDATION_PROFILE` |
-| `policySetId` | `profileId` (from `profile.id`) |
-| `policyId` / `policyVersion` result fields | `profileId` / `profileVersion` |
-| `TrustRegistry` / `createTrustRegistry()` | `ValidationProfileRegistry` / `createValidationProfileRegistry()` |
-| `UNKNOWN_COMMUNITY` / `UNKNOWN_POLICY_SET` / `UNKNOWN_POLICY_VERSION` | `UNKNOWN_PROFILE` / `UNKNOWN_PROFILE_VERSION` |
-| `POLICY_REJECTED` | `PROFILE_REJECTED` |
-| `PolicyError` / `INVALID_POLICY` / `UNSUPPORTED_POLICY` | `ProfileError` / `INVALID_PROFILE` / `UNSUPPORTED_PROFILE` |
-| `policies/` | `profiles/` |
-
-Current registration no longer takes a separate set/community identifier:
-
-```typescript
-// before
-registry.register({ profileId: "a", trustAnchors, policy });
-// after: profile.id is the registry key
-registry.register({ trustAnchors, profile: { ...profile, id: "a" } });
-```
-
-## Package and deployment contract
+## Package and deployment
 
 - Node.js 24 or later; ESM only.
-- Public entry points: `x509-trust` via `./dist/index.js`/`./dist/index.d.ts`,
-  and `x509-trust/worker` via `./dist/worker.js`/`./dist/worker.d.ts`.
+- Public entry points: `x509-trust` via `./dist/index.js` and
+  `./dist/index.d.ts`; `x509-trust/worker` via `./dist/worker.js` and
+  `./dist/worker.d.ts`.
 - Runtime dependencies: `asn1js` and `pkijs`. `piscina` is an optional peer
   dependency required only by `x509-trust/worker`; the main entry point does not
-  load or create worker threads. The worker file is included in `dist` and
-  resolved relative to the installed package, including when installed from a
-  tarball.
-- `npm pack` contains `dist`, `package.json`, and `README.md`; it excludes
-  `.dsh`, PDFs, tests, benchmark sources, fixtures, profiles, native artifacts,
-  private keys, and stale build output. Builds remove `dist` first so stale files
-  cannot be packed. Profiles remain host-owned data.
+  load Piscina or create worker threads.
+- The worker file is included in `dist` and resolved relative to the installed
+  package, including from a tarball.
+- `npm pack` contains `dist`, `package.json`, and `README.md`. It excludes
+  `.dsh`, PDFs, tests, benchmark sources, fixtures, profiles, examples, native
+  artifacts, private keys, and stale build output. Builds remove `dist` first.
+- Profiles remain host-owned data.
 - No database, UI framework, or web server is part of this package.

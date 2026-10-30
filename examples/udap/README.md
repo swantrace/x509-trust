@@ -1,6 +1,6 @@
 # FHIR UDAP integration
 
-The core package has no built-in UDAP or community vocabulary. A UDAP host maps
+The core package has no built-in UDAP vocabulary. A UDAP host maps
 its external trust-framework identifier to a local `profileId` before calling
 the registry:
 
