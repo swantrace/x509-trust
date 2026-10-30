@@ -1,4 +1,4 @@
-import { ResourceLimitError } from "./errors.ts";
+import { ResourceLimitError } from "../errors.ts";
 
 export interface RequestSchedulerOptions {
   maxActiveRequests?: number;

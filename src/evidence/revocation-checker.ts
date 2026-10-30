@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
-import { type CacheStore, createMemoryCache } from "./cache.ts";
-import type { CrlValidationResult } from "./crl.ts";
 import {
   createDiagnosticReporter,
   type DiagnosticCallback,
   type DiagnosticEvent
-} from "./diagnostics.ts";
-import type { OcspValidationResult } from "./ocsp.ts";
-import { createInlinePkiEngine, type PkiEngine } from "./pki-engine.ts";
+} from "../diagnostics.ts";
+import type { CrlValidationResult } from "../engine/crl.ts";
+import type { OcspValidationResult } from "../engine/ocsp.ts";
+import { createInlinePkiEngine, type PkiEngine } from "../engine/pki-engine.ts";
+import { type CacheStore, createMemoryCache } from "./cache.ts";
 
 const DEFAULT_MAX_CACHE_AGE_MS = 60 * 60 * 1000;
 

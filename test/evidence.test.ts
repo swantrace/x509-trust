@@ -5,8 +5,11 @@ import {
   type EvidenceAttempt,
   type EvidenceSummary,
   requiredMechanisms
-} from "../src/evidence.ts";
-import type { RequiredEvidence, RevocationMechanism } from "../src/policy.ts";
+} from "../src/evidence/evidence.ts";
+import type {
+  RequiredEvidence,
+  RevocationMechanism
+} from "../src/policy/policy.ts";
 
 function summary(
   mechanism: RevocationMechanism,

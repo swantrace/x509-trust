@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
+import { createInlinePkiEngine } from "../src/engine/pki-engine.ts";
 import * as mainEntry from "../src/index.ts";
 import {
   createEvidenceProvider,
@@ -7,7 +8,6 @@ import {
   ResourceLimitError,
   type TrustPolicyInput
 } from "../src/index.ts";
-import { createInlinePkiEngine } from "../src/pki-engine.ts";
 import { createWorkerPkiEngine } from "../src/worker.ts";
 import {
   createCrl,

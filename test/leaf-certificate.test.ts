@@ -19,7 +19,7 @@ import {
 import {
   extractLeafCertificate,
   keyUsageNames
-} from "../src/leaf-certificate.ts";
+} from "../src/engine/leaf-certificate.ts";
 
 function readDer(name: string): Uint8Array<ArrayBuffer> {
   const pem = readFileSync(new URL(`./fixtures/${name}.pem`, import.meta.url));

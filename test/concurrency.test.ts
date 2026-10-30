@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { CacheStore } from "../src/cache.ts";
+import type { CacheStore } from "../src/evidence/cache.ts";
 import { createTrustValidator, type TrustPolicyInput } from "../src/index.ts";
 import {
   createCrl,

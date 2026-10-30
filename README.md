@@ -195,6 +195,28 @@ interface EvidenceSummary {
   checkedAtMs: number;
 }
 
+interface EvidenceFinding {
+  certificateIndex: number;
+  mechanism: "crl" | "ocsp";
+  status: "good" | "revoked" | "unknown";
+  authenticated: boolean;
+  fresh: boolean;
+  code?: string;
+  message: string;
+  thisUpdateMs?: number;
+  nextUpdateMs?: number;
+  checkedAtMs?: number;
+}
+
+interface CertificateFindings {
+  certificateIndex: number;
+  pathValid: true;
+  revocation: {
+    crl: EvidenceFinding[];
+    ocsp: EvidenceFinding[];
+  };
+}
+
 type ValidationResult =
   | {
       valid: true;
@@ -202,6 +224,10 @@ type ValidationResult =
       trustAnchorFingerprint256: string;
       leafCertificate: ValidatedLeafCertificate;
       evidence: EvidenceSummary[];
+      findings: CertificateFindings[];
+      policyId: string;
+      policyVersion: string | number;
+      communityId?: string;
     }
   | {
       valid: false;
@@ -209,6 +235,10 @@ type ValidationResult =
       message: string;
       certificateIndex?: number;
       evidence?: EvidenceSummary[];
+      findings?: CertificateFindings[];
+      policyId?: string;
+      policyVersion?: string | number;
+      communityId?: string;
     };
 ```
 
@@ -242,6 +272,15 @@ non-anchor certificate's status. It includes the certificate index, mechanism,
 status, the evidence `thisUpdate`/`nextUpdate`, and the time at which it was
 checked. A revoked failure includes the revoked evidence summary; failures that
 cannot authenticate evidence expose no positive evidence claim.
+
+`findings` is the diagnostic counterpart: one entry per non-anchor certificate
+whose evidence pipeline completed, containing the CRL and OCSP attempts that
+were actually made, including `unknown` attempts. An early authenticated-revoked
+result may include only the revoked certificate's findings because the other
+pipelines are cancelled. `authenticated` and `fresh` record the established facts;
+they are `false` for unknown/unusable evidence. Findings are for audit,
+diagnostics, and table-driven tests. They are not a trust decision and must not
+be used by callers to override the validation result.
 
 ### Migrating from the top-level SAN field
 
@@ -295,9 +334,15 @@ const validator = createTrustValidator({
   trustAnchors: [rootCertificate],
   policy: {
     id: "example:strict",
-    version: 1,
-    source: "https://example.org/pki/policy/1.0",
+    version: "2026-01",
+    versionOrder: 1,
+    source: {
+      uri: "https://example.org/pki/policy",
+      version: "3.1",
+      effectiveDate: "2026-01-01"
+    },
     anchorSetId: "example:root-2026",
+    requiredCapabilities: ["revocation:both"],
     revocation: {
       requiredEvidence: "both",
       sourceOrder: ["crl", "ocsp"]
@@ -305,6 +350,17 @@ const validator = createTrustValidator({
   }
 });
 ```
+
+Policy identity and provenance:
+
+- `version` accepts a number or a non-empty string.
+- Numeric versions default `versionOrder` to the version number.
+- String versions require an explicit positive-integer `versionOrder`; the
+  registry uses it to select the latest version.
+- `source` accepts a legacy string or `{ uri, version?, effectiveDate? }`.
+- `requiredCapabilities` is validated against `POLICY_CAPABILITIES`. The
+  compiled policy also exposes the capabilities actually exercised as
+  `capabilities`.
 
 The compiled policy has these defaults:
 
@@ -855,6 +911,20 @@ in mind:
 
 Sahara and its databases were not modified by this work. Its Rust branch and
 credentials remain outside this repository.
+
+## Project layout
+
+The source tree is grouped by responsibility:
+
+- `src/engine/` — PKI.js-backed DER/DTO engine, path/CRL/OCSP, certificate facts,
+  CRL index cache.
+- `src/policy/` — policy schema/compiler, registered rules, community registry.
+- `src/evidence/` — evidence decisions, concurrent collection, HTTP loaders,
+  provider scheduling/single-flight, cache, revocation checker.
+- `src/validator/` — public validation orchestration and result assembly.
+- `src/workers/` — Piscina worker engine and DER/DTO worker task protocol.
+- `src/index.ts`, `src/worker.ts` — public entry points.
+- Shared errors/diagnostics remain at `src/`.
 
 ## Package and deployment contract
 

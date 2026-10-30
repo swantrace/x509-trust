@@ -1,15 +1,17 @@
-import type { CrlValidationResult } from "./crl.ts";
-import { ResourceLimitError } from "./errors.ts";
+import type { CrlValidationResult } from "../engine/crl.ts";
+import type { OcspValidationResult } from "../engine/ocsp.ts";
+import type { PreparedCertificate } from "../engine/pki-engine.ts";
+import { ResourceLimitError } from "../errors.ts";
+import type { CompiledTrustPolicy } from "../policy/policy.ts";
 import {
+  type CertificateFindings,
   decideRevocationEvidence,
   type EvidenceAttempt,
+  type EvidenceFinding,
   type EvidenceSummary,
   requiredMechanisms
 } from "./evidence.ts";
 import type { CrlLoadOptions, OcspLoadOptions } from "./http-loaders.ts";
-import type { OcspValidationResult } from "./ocsp.ts";
-import type { PreparedCertificate } from "./pki-engine.ts";
-import type { CompiledTrustPolicy } from "./policy.ts";
 import type { createRevocationChecker } from "./revocation-checker.ts";
 
 type RevocationChecker = ReturnType<typeof createRevocationChecker>;
@@ -17,9 +19,21 @@ type CrlLoader = (url: string, options?: CrlLoadOptions) => Promise<Uint8Array>;
 type OcspLoader = (options: OcspLoadOptions) => Promise<Uint8Array>;
 
 export type CertificateRevocation =
-  | { status: "good"; evidence: EvidenceSummary[] }
-  | { status: "revoked"; evidence: EvidenceSummary }
-  | { status: "unknown"; message: string };
+  | {
+      status: "good";
+      evidence: EvidenceSummary[];
+      findings: CertificateFindings;
+    }
+  | {
+      status: "revoked";
+      evidence: EvidenceSummary;
+      findings: CertificateFindings;
+    }
+  | {
+      status: "unknown";
+      message: string;
+      findings: CertificateFindings;
+    };
 
 interface EvidenceCollectorOptions {
   policy: CompiledTrustPolicy;
@@ -97,6 +111,41 @@ function recordResult(
   return summary;
 }
 
+function findingFor(attempt: EvidenceAttempt): EvidenceFinding {
+  return {
+    certificateIndex: attempt.certificateIndex,
+    mechanism: attempt.mechanism,
+    status: attempt.status,
+    authenticated:
+      attempt.status !== "unknown" && attempt.evidence?.authenticated === true,
+    fresh: attempt.status !== "unknown" && attempt.evidence?.fresh === true,
+    ...(attempt.code === undefined ? {} : { code: attempt.code }),
+    message: attempt.message,
+    ...(attempt.evidence
+      ? {
+          thisUpdateMs: attempt.evidence.thisUpdateMs,
+          nextUpdateMs: attempt.evidence.nextUpdateMs,
+          checkedAtMs: attempt.evidence.checkedAtMs
+        }
+      : {})
+  };
+}
+
+function findingsFor(
+  certificateIndex: number,
+  attempts: EvidenceAttempt[]
+): CertificateFindings {
+  const findings = attempts.map(findingFor);
+  return {
+    certificateIndex,
+    pathValid: true,
+    revocation: {
+      crl: findings.filter((finding) => finding.mechanism === "crl"),
+      ocsp: findings.filter((finding) => finding.mechanism === "ocsp")
+    }
+  };
+}
+
 export async function collectCertificateEvidence({
   policy,
   checker,
@@ -169,7 +218,11 @@ export async function collectCertificateEvidence({
           continue;
         }
         if (summary.status === "revoked") {
-          return { status: "revoked", evidence: summary };
+          return {
+            status: "revoked",
+            evidence: summary,
+            findings: findingsFor(certificateIndex, attempts)
+          };
         }
 
         goodByMechanism.set(mechanism, summary);
@@ -183,7 +236,8 @@ export async function collectCertificateEvidence({
               policy,
               goodByMechanism,
               policy.revocation.requiredEvidence === "any" ? summary : undefined
-            )
+            ),
+            findings: findingsFor(certificateIndex, attempts)
           };
         }
         // This mechanism is satisfied; continue with the next required one.
@@ -205,11 +259,16 @@ export async function collectCertificateEvidence({
     policy.revocation.requiredEvidence,
     attempts
   );
+  const findings = findingsFor(certificateIndex, attempts);
   if (decision.status === "revoked") {
-    return { status: "revoked", evidence: decision.evidence };
+    return { status: "revoked", evidence: decision.evidence, findings };
   }
   if (decision.status === "good") {
-    return { status: "good", evidence: decision.evidence };
+    return { status: "good", evidence: decision.evidence, findings };
   }
-  return { status: "unknown", message: decision.message || message };
+  return {
+    status: "unknown",
+    message: decision.message || message,
+    findings
+  };
 }

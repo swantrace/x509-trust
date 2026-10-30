@@ -1,11 +1,11 @@
 import { X509Certificate } from "node:crypto";
 import { availableParallelism } from "node:os";
 import { Piscina } from "piscina";
-import type { CrlValidationResult } from "./crl.ts";
-import type { CrlIndexCacheOptions } from "./crl-index-cache.ts";
-import { ResourceLimitError } from "./errors.ts";
-import type { OcspValidationResult } from "./ocsp.ts";
-import type { PkiEngine, PreparedPathResult } from "./pki-engine.ts";
+import type { CrlValidationResult } from "../engine/crl.ts";
+import type { CrlIndexCacheOptions } from "../engine/crl-index-cache.ts";
+import type { OcspValidationResult } from "../engine/ocsp.ts";
+import type { PkiEngine, PreparedPathResult } from "../engine/pki-engine.ts";
+import { ResourceLimitError } from "../errors.ts";
 import type { PkiWorkerResult, PkiWorkerTask } from "./pki-worker-protocol.ts";
 
 export interface PkiWorkerEngineOptions {

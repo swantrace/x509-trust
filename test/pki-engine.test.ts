@@ -10,7 +10,7 @@ import {
   id_BasicConstraints,
   id_KeyUsage
 } from "pkijs";
-import { createInlinePkiEngine } from "../src/pki-engine.ts";
+import { createInlinePkiEngine } from "../src/engine/pki-engine.ts";
 
 function readPem(name: string): string {
   return readFileSync(

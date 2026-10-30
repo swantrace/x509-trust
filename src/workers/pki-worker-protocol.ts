@@ -1,6 +1,6 @@
-import type { CrlValidationResult } from "./crl.ts";
-import type { OcspValidationResult } from "./ocsp.ts";
-import type { PreparedPathResult } from "./pki-engine.ts";
+import type { CrlValidationResult } from "../engine/crl.ts";
+import type { OcspValidationResult } from "../engine/ocsp.ts";
+import type { PreparedPathResult } from "../engine/pki-engine.ts";
 
 export type PkiWorkerTask =
   | {

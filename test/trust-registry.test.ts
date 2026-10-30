@@ -544,3 +544,69 @@ test("rules cannot override core path or revocation failures", async () => {
   assert.equal(revoked.valid, false);
   assert.equal(revoked.code, "CERTIFICATE_REVOKED");
 });
+
+test("selects string policy versions using explicit versionOrder", async () => {
+  const v1 = {
+    id: "versions:string:v1",
+    version: "2025-01",
+    versionOrder: 10,
+    source: { uri: "https://community.example/policy/2025-01" },
+    anchorSetId: "synthetic:root",
+    revocation: {
+      requiredEvidence: "crl" as const,
+      sourceOrder: ["crl"] as const
+    }
+  };
+  const v2 = {
+    id: "versions:string:v2",
+    version: "2026-01",
+    versionOrder: 20,
+    source: { uri: "https://community.example/policy/2026-01" },
+    anchorSetId: "synthetic:root",
+    revocation: {
+      requiredEvidence: "crl" as const,
+      sourceOrder: ["crl"] as const
+    },
+    rules: { leafExtendedKeyUsage: ["1.3.6.1.5.5.7.3.9"] }
+  };
+  const { registry } = makeRegistry([
+    { communityId: "string-versions", chain: base, policy: v1 },
+    { communityId: "string-versions", chain: base, policy: v2 }
+  ]);
+  const latest = await registry.verify({
+    communityId: "string-versions",
+    certificateChain: inputFor(base)
+  });
+  assert.equal(latest.valid, false);
+  assert.equal(latest.code, "POLICY_REJECTED");
+  assert.equal(latest.policyVersion, "2026-01");
+
+  const pinned = await registry.verify({
+    communityId: "string-versions",
+    policyVersion: "2025-01",
+    certificateChain: inputFor(base)
+  });
+  assert.equal(pinned.valid, true);
+  assert.equal(pinned.valid && pinned.policyVersion, "2025-01");
+
+  assert.throws(
+    () =>
+      registry.register({
+        communityId: "string-versions",
+        trustAnchors: [base.root.der],
+        policy: { ...v1, version: "2025-02", versionOrder: 10 }
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof PolicyError);
+      assert.equal(error.code, "INVALID_POLICY");
+      return true;
+    }
+  );
+  const missing = await registry.verify({
+    communityId: "string-versions",
+    policyVersion: "2024-01",
+    certificateChain: inputFor(base)
+  });
+  assert.equal(missing.valid, false);
+  assert.equal(missing.code, "UNKNOWN_POLICY_VERSION");
+});

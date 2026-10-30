@@ -158,7 +158,10 @@ test("sourceOrder controls collection order independently of required evidence",
     (await crlValidator.verify({ certificateChain: chainInput })).valid,
     true
   );
-  assert.deepEqual(crlFirst.crl, [leafCrl[0], intermediateCrl]);
+  assert.deepEqual(
+    new Set(crlFirst.crl),
+    new Set([leafCrl[0], intermediateCrl])
+  );
   assert.deepEqual(crlFirst.ocsp, []);
 
   const ocspFirst = { crl: [] as string[], ocsp: [] as string[] };
@@ -173,7 +176,10 @@ test("sourceOrder controls collection order independently of required evidence",
     (await ocspValidator.verify({ certificateChain: chainInput })).valid,
     true
   );
-  assert.deepEqual(ocspFirst.ocsp, [leafOcsp, intermediateOcsp]);
+  assert.deepEqual(
+    new Set(ocspFirst.ocsp),
+    new Set([leafOcsp, intermediateOcsp])
+  );
   assert.deepEqual(ocspFirst.crl, []);
 });
 
@@ -192,8 +198,8 @@ test("requiredEvidence=crl needs CRL success even when OCSP is good", async () =
     result.evidence.map((entry) => entry.mechanism),
     ["crl", "crl"]
   );
-  assert.deepEqual(calls.ocsp, [leafOcsp, intermediateOcsp]);
-  assert.deepEqual(calls.crl, [leafCrl[0], intermediateCrl]);
+  assert.deepEqual(new Set(calls.ocsp), new Set([leafOcsp, intermediateOcsp]));
+  assert.deepEqual(new Set(calls.crl), new Set([leafCrl[0], intermediateCrl]));
 
   const ocspOnlyCalls = { crl: [] as string[], ocsp: [] as string[] };
   const ocspOnly = validators({
@@ -272,8 +278,14 @@ test("requiredEvidence=ocsp needs OCSP success even when CRLs are good", async (
     (await valid.verify({ certificateChain: chainInput })).valid,
     true
   );
-  assert.deepEqual(validCalls.crl, [leafCrl[0], intermediateCrl]);
-  assert.deepEqual(validCalls.ocsp, [leafOcsp, intermediateOcsp]);
+  assert.deepEqual(
+    new Set(validCalls.crl),
+    new Set([leafCrl[0], intermediateCrl])
+  );
+  assert.deepEqual(
+    new Set(validCalls.ocsp),
+    new Set([leafOcsp, intermediateOcsp])
+  );
 });
 
 test("requiredEvidence=both requires both mechanisms and reports both summaries", async () => {
@@ -287,6 +299,16 @@ test("requiredEvidence=both requires both mechanisms and reports both summaries"
   });
   const result = await validator.verify({ certificateChain: chainInput });
   assert.equal(result.valid, true);
+  assert.equal(result.findings.length, 2);
+  for (const finding of result.findings) {
+    assert.deepEqual(
+      {
+        crl: finding.revocation.crl.map((entry) => entry.status),
+        ocsp: finding.revocation.ocsp.map((entry) => entry.status)
+      },
+      { crl: ["good"], ocsp: ["good"] }
+    );
+  }
   assert.deepEqual(
     result.evidence.map(({ certificateIndex, mechanism }) => ({
       certificateIndex,

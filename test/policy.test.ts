@@ -330,3 +330,90 @@ test("returns the selected policy identity on success", async () => {
     new X509Certificate(leaf).fingerprint256
   );
 });
+
+test("compiles structured policy sources and ordered string versions", () => {
+  const policy = compileTrustPolicy({
+    ...validPolicy(),
+    version: "2026-01",
+    versionOrder: 42,
+    source: {
+      uri: "https://community.example/policy",
+      version: "3.2",
+      effectiveDate: "2026-01-15"
+    }
+  });
+  assert.equal(policy.version, "2026-01");
+  assert.equal(policy.versionOrder, 42);
+  assert.deepEqual(policy.source, {
+    uri: "https://community.example/policy",
+    version: "3.2",
+    effectiveDate: "2026-01-15"
+  });
+  assert.throws(
+    () =>
+      compileTrustPolicy({
+        ...validPolicy(),
+        version: "2026-01"
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof PolicyError);
+      assert.match(error.message, /versionOrder is required/);
+      return true;
+    }
+  );
+  for (const source of [
+    { uri: "" },
+    { uri: "https://x", unknown: true },
+    { uri: "https://x", effectiveDate: "not-a-date" }
+  ]) {
+    assert.throws(
+      () =>
+        compileTrustPolicy({
+          ...validPolicy(),
+          source: source as never
+        }),
+      PolicyError
+    );
+  }
+});
+
+test("declares and validates policy capabilities explicitly", () => {
+  const policy = compileTrustPolicy({
+    ...validPolicy(),
+    requiredCapabilities: ["revocation:crl", "rules:leaf-key-usage"],
+    rules: { leafKeyUsage: ["digitalSignature"] }
+  });
+  assert.deepEqual(policy.requiredCapabilities, [
+    "revocation:crl",
+    "rules:leaf-key-usage"
+  ]);
+  assert.ok(policy.capabilities.includes("revocation:any"));
+  assert.ok(policy.capabilities.includes("revocation:crl"));
+  assert.ok(policy.capabilities.includes("revocation:ocsp"));
+  assert.ok(policy.capabilities.includes("rules:leaf-key-usage"));
+
+  assert.throws(
+    () =>
+      compileTrustPolicy({
+        ...validPolicy(),
+        requiredCapabilities: ["delegated-ocsp" as never]
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof PolicyError);
+      assert.equal(error.code, "UNSUPPORTED_POLICY");
+      return true;
+    }
+  );
+  assert.throws(
+    () =>
+      compileTrustPolicy({
+        ...validPolicy(),
+        requiredCapabilities: ["revocation:crl", "revocation:crl"]
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof PolicyError);
+      assert.equal(error.code, "INVALID_POLICY");
+      return true;
+    }
+  );
+});

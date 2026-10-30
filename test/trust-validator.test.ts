@@ -97,6 +97,19 @@ test("public API validates a full path using CRLs for leaf and intermediate", as
       (entry) => entry.authenticated && entry.fresh && entry.checkedAtMs > 0
     )
   );
+  assert.equal(result.findings.length, 2);
+  assert.deepEqual(
+    result.findings.map((entry) => entry.certificateIndex),
+    [0, 1]
+  );
+  for (const finding of result.findings) {
+    assert.equal(finding.pathValid, true);
+    assert.equal(finding.revocation.crl.length, 1);
+    assert.equal(finding.revocation.crl[0].status, "good");
+    assert.equal(finding.revocation.crl[0].authenticated, true);
+    assert.equal(finding.revocation.crl[0].fresh, true);
+    assert.deepEqual(finding.revocation.ocsp, []);
+  }
 
   // Results are independent snapshots: mutating them must not change trust.
   result.leafCertificate.der.fill(0);
@@ -164,6 +177,8 @@ test("reports revoked while other certificate pipelines may be in flight", async
     result.evidence?.map(({ mechanism, status }) => ({ mechanism, status })),
     [{ mechanism: "crl", status: "revoked" }]
   );
+  assert.equal(result.findings?.[0].revocation.crl[0].status, "revoked");
+  assert.equal(result.findings?.[0].revocation.crl[0].authenticated, true);
 });
 
 test("a good leaf status is insufficient when intermediate status cannot be established", async () => {
@@ -182,6 +197,9 @@ test("a good leaf status is insufficient when intermediate status cannot be esta
   assert.equal(result.valid, false);
   assert.equal(result.code, "REVOCATION_STATUS_UNKNOWN");
   assert.equal(result.certificateIndex, 1);
+  assert.equal(result.findings?.[1].revocation.crl[0].status, "unknown");
+  assert.equal(result.findings?.[1].revocation.crl[0].authenticated, false);
+  assert.equal(result.findings?.[1].revocation.crl[0].fresh, false);
 });
 
 test("rejects invalid, untrusted and expired paths before calling loaders", async () => {

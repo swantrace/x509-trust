@@ -1,36 +1,41 @@
 import { X509Certificate } from "node:crypto";
-import type { CacheStore } from "./cache.ts";
-import type { CertificateInput } from "./certificate-path.ts";
+import type { DiagnosticCallback } from "../diagnostics.ts";
+import type { CertificateInput } from "../engine/certificate-path.ts";
 import {
   type CrlIndexCacheOptions,
   createCrlIndexCache
-} from "./crl-index-cache.ts";
-import type { DiagnosticCallback } from "./diagnostics.ts";
-import { invalidPolicy, ResourceLimitError } from "./errors.ts";
-import { type EvidenceSummary, requiredMechanisms } from "./evidence.ts";
-import { collectCertificateEvidence } from "./evidence-collector.ts";
+} from "../engine/crl-index-cache.ts";
+import type { ValidatedLeafCertificate } from "../engine/leaf-certificate.ts";
+import { createInlinePkiEngine, type PkiEngine } from "../engine/pki-engine.ts";
+import { invalidPolicy, ResourceLimitError } from "../errors.ts";
+import type { CacheStore } from "../evidence/cache.ts";
+import {
+  type CertificateFindings,
+  type EvidenceSummary,
+  requiredMechanisms
+} from "../evidence/evidence.ts";
+import { collectCertificateEvidence } from "../evidence/evidence-collector.ts";
 import {
   createEvidenceProvider,
   type EvidenceProvider
-} from "./evidence-provider.ts";
+} from "../evidence/evidence-provider.ts";
 import {
   type CrlLoadOptions,
   type HttpOptions,
   type OcspLoadOptions
-} from "./http-loaders.ts";
-import type { ValidatedLeafCertificate } from "./leaf-certificate.ts";
-import { createInlinePkiEngine, type PkiEngine } from "./pki-engine.ts";
+} from "../evidence/http-loaders.ts";
+import { createRevocationChecker } from "../evidence/revocation-checker.ts";
 import {
   compileTrustPolicy,
   DEFAULT_TRUST_POLICY,
+  type PolicyVersion,
   type TrustPolicyInput
-} from "./policy.ts";
-import { createRevocationChecker } from "./revocation-checker.ts";
+} from "../policy/policy.ts";
 import {
   applyTrustRules,
   normalizeRuleRegistrations,
   type TrustRuleRegistration
-} from "./rules.ts";
+} from "../policy/rules.ts";
 
 export interface TrustValidatorOptions {
   trustAnchors: readonly CertificateInput[];
@@ -76,8 +81,9 @@ export type ValidationResult =
       trustAnchorFingerprint256: string;
       leafCertificate: ValidatedLeafCertificate;
       evidence: EvidenceSummary[];
+      findings: CertificateFindings[];
       policyId: string;
-      policyVersion: number;
+      policyVersion: PolicyVersion;
       communityId?: string;
     }
   | {
@@ -86,8 +92,9 @@ export type ValidationResult =
       message: string;
       certificateIndex?: number;
       evidence?: EvidenceSummary[];
+      findings?: CertificateFindings[];
       policyId?: string;
-      policyVersion?: number;
+      policyVersion?: PolicyVersion;
       communityId?: string;
     };
 
@@ -233,10 +240,12 @@ export function createTrustValidator({
       let resolveRevoked!: (value: {
         certificateIndex: number;
         evidence: EvidenceSummary;
+        findings: CertificateFindings;
       }) => void;
       const revokedSignal = new Promise<{
         certificateIndex: number;
         evidence: EvidenceSummary;
+        findings: CertificateFindings;
       }>((resolve) => {
         resolveRevoked = resolve;
       });
@@ -271,7 +280,8 @@ export function createTrustValidator({
             if (result.status === "revoked") {
               resolveRevoked({
                 certificateIndex: index,
-                evidence: result.evidence
+                evidence: result.evidence,
+                findings: result.findings
               });
             }
             return { index, result } satisfies PipelineResult;
@@ -315,6 +325,7 @@ export function createTrustValidator({
           message: "Certificate has been revoked",
           certificateIndex: outcome.value.certificateIndex,
           evidence: [outcome.value.evidence],
+          findings: [outcome.value.findings],
           policyId: policy.id,
           policyVersion: policy.version,
           ...(communityId ? { communityId } : {})
@@ -336,12 +347,19 @@ export function createTrustValidator({
           message: "Certificate has been revoked",
           certificateIndex: revokedEntry.index,
           evidence: [revokedEntry.result.evidence],
+          findings: [revokedEntry.result.findings],
           policyId: policy.id,
           policyVersion: policy.version,
           ...(communityId ? { communityId } : {})
         };
       }
+      const completedFindings: CertificateFindings[] = [];
+      for (const entry of outcome.results) {
+        if ("error" in entry) continue;
+        completedFindings.push(entry.result.findings);
+      }
       const evidence: EvidenceSummary[] = [];
+      const findings: CertificateFindings[] = [];
       for (const entry of outcome.results) {
         if ("error" in entry) {
           const resourceLimited = entry.error instanceof ResourceLimitError;
@@ -354,6 +372,7 @@ export function createTrustValidator({
               ? (entry.error as ResourceLimitError).message
               : "Revocation validation failed",
             certificateIndex: entry.index,
+            findings: completedFindings,
             policyId: policy.id,
             policyVersion: policy.version,
             ...(communityId ? { communityId } : {})
@@ -365,6 +384,7 @@ export function createTrustValidator({
             code: "REVOCATION_STATUS_UNKNOWN",
             message: entry.result.message,
             certificateIndex: entry.index,
+            findings: completedFindings,
             policyId: policy.id,
             policyVersion: policy.version,
             ...(communityId ? { communityId } : {})
@@ -372,6 +392,7 @@ export function createTrustValidator({
         }
         if (entry.result.status !== "good") continue;
         evidence.push(...entry.result.evidence);
+        findings.push(entry.result.findings);
       }
 
       const ruleFailure = await applyTrustRules({
@@ -387,6 +408,7 @@ export function createTrustValidator({
           code: "POLICY_REJECTED",
           message: ruleFailure,
           evidence,
+          findings,
           policyId: policy.id,
           policyVersion: policy.version,
           ...(communityId ? { communityId } : {})
@@ -399,6 +421,7 @@ export function createTrustValidator({
         trustAnchorFingerprint256: path.trustAnchorFingerprint256,
         leafCertificate: path.leafCertificate,
         evidence,
+        findings,
         policyId: policy.id,
         policyVersion: policy.version,
         ...(communityId ? { communityId } : {})

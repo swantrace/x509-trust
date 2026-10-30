@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CertificateRevocationList } from "pkijs";
-import { validateCrl } from "../src/crl.ts";
+import { validateCrl } from "../src/engine/crl.ts";
 import {
   type CrlIndex,
   createCrlIndexCache,
   crlDerHash
-} from "../src/crl-index-cache.ts";
+} from "../src/engine/crl-index-cache.ts";
+import { createInlinePkiEngine } from "../src/engine/pki-engine.ts";
 import { createTrustValidator, type TrustPolicyInput } from "../src/index.ts";
-import { createInlinePkiEngine } from "../src/pki-engine.ts";
 import {
   createCrl,
   createLeafForChain,

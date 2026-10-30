@@ -1,9 +1,9 @@
-import { invalidPolicy, unsupportedPolicy } from "./errors.ts";
 import type {
   CertificateFacts,
   KeyUsageName,
   ValidatedLeafCertificate
-} from "./leaf-certificate.ts";
+} from "../engine/leaf-certificate.ts";
+import { invalidPolicy, unsupportedPolicy } from "../errors.ts";
 import type { CompiledTrustPolicy } from "./policy.ts";
 
 export interface RuleLeafFacts {

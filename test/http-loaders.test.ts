@@ -6,7 +6,7 @@ import http, { type RequestListener } from "node:http";
 import type { AddressInfo } from "node:net";
 import { type TestContext, test } from "node:test";
 import { BasicOCSPResponse, OCSPRequest, OCSPResponse } from "pkijs";
-import { createHttpLoaders } from "../src/http-loaders.ts";
+import { createHttpLoaders } from "../src/evidence/http-loaders.ts";
 import { createTrustValidator } from "../src/index.ts";
 
 function fixture(name: string) {

@@ -1,14 +1,38 @@
-import { invalidPolicy, unsupportedPolicy } from "./errors.ts";
-import type { KeyUsageName } from "./leaf-certificate.ts";
+import type { KeyUsageName } from "../engine/leaf-certificate.ts";
+import { invalidPolicy, unsupportedPolicy } from "../errors.ts";
 
 export type RevocationMechanism = "crl" | "ocsp";
 export type RequiredEvidence = "any" | "crl" | "ocsp" | "both";
+export type PolicyVersion = string | number;
+export type PolicyCapability =
+  | "revocation:any"
+  | "revocation:crl"
+  | "revocation:ocsp"
+  | "revocation:both"
+  | "revocation:non-anchor-chain"
+  | "revocation:require-next-update"
+  | "revocation:zero-clock-skew"
+  | "rules:leaf-key-usage"
+  | "rules:leaf-extended-key-usage"
+  | "rules:required-leaf-policy-oids"
+  | "rules:max-path-depth"
+  | "rules:required-rule-names";
+
+export interface PolicySource {
+  uri: string;
+  version?: string;
+  effectiveDate?: string;
+}
 
 export interface TrustPolicyInput {
   id: string;
-  version: number;
-  source: string;
+  version: PolicyVersion;
+  /** Explicit ordering used to select the latest version in a registry. */
+  versionOrder?: number;
+  source: string | PolicySource;
   anchorSetId: string;
+  /** Capabilities this policy explicitly requires the engine to support. */
+  requiredCapabilities?: readonly PolicyCapability[];
   revocation?: {
     requiredEvidence?: RequiredEvidence;
     sourceOrder?: readonly RevocationMechanism[];
@@ -28,9 +52,14 @@ export interface TrustPolicyInput {
 
 export interface CompiledTrustPolicy {
   readonly id: string;
-  readonly version: number;
-  readonly source: string;
+  readonly version: PolicyVersion;
+  readonly versionOrder: number;
+  readonly source: Readonly<PolicySource>;
   readonly anchorSetId: string;
+  /** Capabilities explicitly declared by the caller. */
+  readonly requiredCapabilities: readonly PolicyCapability[];
+  /** Capabilities actually exercised by the compiled policy. */
+  readonly capabilities: readonly PolicyCapability[];
   readonly revocation: Readonly<{
     requiredEvidence: RequiredEvidence;
     sourceOrder: readonly RevocationMechanism[];
@@ -48,6 +77,23 @@ export interface CompiledTrustPolicy {
   }>;
 }
 
+export const POLICY_CAPABILITIES: readonly PolicyCapability[] = Object.freeze([
+  "revocation:any",
+  "revocation:crl",
+  "revocation:ocsp",
+  "revocation:both",
+  "revocation:non-anchor-chain",
+  "revocation:require-next-update",
+  "revocation:zero-clock-skew",
+  "rules:leaf-key-usage",
+  "rules:leaf-extended-key-usage",
+  "rules:required-leaf-policy-oids",
+  "rules:max-path-depth",
+  "rules:required-rule-names"
+] as const);
+
+const SUPPORTED_CAPABILITIES = new Set<string>(POLICY_CAPABILITIES);
+
 export interface CompilePolicyOptions {
   registeredRuleNames?: readonly string[];
 }
@@ -64,6 +110,7 @@ export const DEFAULT_TRUST_POLICY: TrustPolicyInput = Object.freeze({
 });
 
 export const trustPolicyCapabilities = Object.freeze({
+  supported: POLICY_CAPABILITIES,
   revocationScope: Object.freeze(["non-anchor-chain"] as const),
   requiredEvidence: Object.freeze(["any", "crl", "ocsp", "both"] as const),
   rules: Object.freeze([
@@ -167,6 +214,76 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
+function compilePolicyVersion(
+  version: unknown,
+  versionOrder: unknown
+): { version: PolicyVersion; versionOrder: number } {
+  let order: number | undefined;
+  if (versionOrder !== undefined) {
+    if (!Number.isSafeInteger(versionOrder) || (versionOrder as number) <= 0) {
+      throw invalidPolicy("policy.versionOrder must be a positive integer");
+    }
+    order = versionOrder as number;
+  }
+  if (typeof version === "number") {
+    if (!Number.isSafeInteger(version) || version <= 0) {
+      throw invalidPolicy("policy.version must be a positive integer");
+    }
+    return { version, versionOrder: order ?? version };
+  }
+  if (typeof version === "string") {
+    if (version.trim() === "") {
+      throw invalidPolicy("policy.version must be a non-empty string");
+    }
+    if (order === undefined) {
+      throw invalidPolicy(
+        "policy.versionOrder is required when policy.version is a string"
+      );
+    }
+    return { version, versionOrder: order };
+  }
+  throw invalidPolicy("policy.version must be a string or positive integer");
+}
+
+function compilePolicySource(value: unknown): PolicySource {
+  if (typeof value === "string") {
+    return { uri: nonEmptyString(value, "policy.source") };
+  }
+  assertObject(value, "policy.source", ["uri", "version", "effectiveDate"]);
+  const uri = nonEmptyString(value.uri, "policy.source.uri");
+  const sourceVersion =
+    value.version === undefined
+      ? undefined
+      : nonEmptyString(value.version, "policy.source.version");
+  let effectiveDate: string | undefined;
+  if (value.effectiveDate !== undefined) {
+    effectiveDate = nonEmptyString(
+      value.effectiveDate,
+      "policy.source.effectiveDate"
+    );
+    if (Number.isNaN(Date.parse(effectiveDate))) {
+      throw invalidPolicy(
+        "policy.source.effectiveDate must be a valid date string"
+      );
+    }
+  }
+  return {
+    uri,
+    ...(sourceVersion === undefined ? {} : { version: sourceVersion }),
+    ...(effectiveDate === undefined ? {} : { effectiveDate })
+  };
+}
+
+function copyCapabilities(value: unknown, path: string): PolicyCapability[] {
+  const capabilities = copyStringList(value, path);
+  for (const capability of capabilities) {
+    if (!SUPPORTED_CAPABILITIES.has(capability)) {
+      throw unsupportedPolicy(`Unsupported policy capability "${capability}"`);
+    }
+  }
+  return capabilities as PolicyCapability[];
+}
+
 export function compileTrustPolicy(
   input: unknown = DEFAULT_TRUST_POLICY,
   { registeredRuleNames = [] }: CompilePolicyOptions = {}
@@ -174,17 +291,27 @@ export function compileTrustPolicy(
   assertObject(input, "policy", [
     "id",
     "version",
+    "versionOrder",
     "source",
     "anchorSetId",
+    "requiredCapabilities",
     "revocation",
     "rules"
   ]);
   const id = nonEmptyString(input.id, "policy.id");
-  if (!Number.isSafeInteger(input.version) || (input.version as number) <= 0) {
-    throw invalidPolicy("policy.version must be a positive integer");
-  }
-  const source = nonEmptyString(input.source, "policy.source");
+  const { version, versionOrder } = compilePolicyVersion(
+    input.version,
+    input.versionOrder
+  );
+  const source = compilePolicySource(input.source);
   const anchorSetId = nonEmptyString(input.anchorSetId, "policy.anchorSetId");
+  const requiredCapabilities =
+    input.requiredCapabilities === undefined
+      ? []
+      : copyCapabilities(
+          input.requiredCapabilities,
+          "policy.requiredCapabilities"
+        );
 
   let requiredEvidence: RequiredEvidence = "any";
   let sourceOrder: RevocationMechanism[] = ["ocsp", "crl"];
@@ -340,11 +467,31 @@ export function compileTrustPolicy(
     }
   }
 
+  const capabilities = new Set<PolicyCapability>([
+    `revocation:${requiredEvidence}`,
+    "revocation:non-anchor-chain",
+    "revocation:require-next-update",
+    "revocation:zero-clock-skew"
+  ]);
+  for (const mechanism of sourceOrder) {
+    capabilities.add(`revocation:${mechanism}`);
+  }
+  if (rules?.leafKeyUsage) capabilities.add("rules:leaf-key-usage");
+  if (rules?.leafExtendedKeyUsage)
+    capabilities.add("rules:leaf-extended-key-usage");
+  if (rules?.requiredLeafPolicyOids)
+    capabilities.add("rules:required-leaf-policy-oids");
+  if (rules?.maxPathDepth) capabilities.add("rules:max-path-depth");
+  if (rules?.requiredRuleNames) capabilities.add("rules:required-rule-names");
+
   return deepFreeze({
     id,
-    version: input.version as number,
+    version,
+    versionOrder,
     source,
     anchorSetId,
+    requiredCapabilities,
+    capabilities: [...capabilities],
     revocation: {
       requiredEvidence,
       sourceOrder,

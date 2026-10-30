@@ -4,8 +4,9 @@ import type { AddressInfo } from "node:net";
 import { cpus, platform, release, totalmem } from "node:os";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { Certificate } from "pkijs";
-import { validateCrl } from "../src/crl.ts";
-import { createCrlIndexCache } from "../src/crl-index-cache.ts";
+import { validateCrl } from "../src/engine/crl.ts";
+import { createCrlIndexCache } from "../src/engine/crl-index-cache.ts";
+import { createInlinePkiEngine } from "../src/engine/pki-engine.ts";
 import {
   createEvidenceProvider,
   createTrustValidator,
@@ -13,7 +14,6 @@ import {
   type TrustPolicyInput,
   type ValidationResult
 } from "../src/index.ts";
-import { createInlinePkiEngine } from "../src/pki-engine.ts";
 import { createWorkerPkiEngine } from "../src/worker.ts";
 import {
   createCrl,

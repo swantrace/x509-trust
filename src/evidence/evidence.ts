@@ -1,4 +1,7 @@
-import type { RequiredEvidence, RevocationMechanism } from "./policy.ts";
+import type {
+  RequiredEvidence,
+  RevocationMechanism
+} from "../policy/policy.ts";
 
 export interface EvidenceSummary {
   certificateIndex: number;
@@ -18,6 +21,28 @@ export interface EvidenceAttempt {
   evidence?: EvidenceSummary;
   code?: string;
   message: string;
+}
+
+export interface EvidenceFinding {
+  certificateIndex: number;
+  mechanism: RevocationMechanism;
+  status: "good" | "revoked" | "unknown";
+  authenticated: boolean;
+  fresh: boolean;
+  code?: string;
+  message: string;
+  thisUpdateMs?: number;
+  nextUpdateMs?: number;
+  checkedAtMs?: number;
+}
+
+export interface CertificateFindings {
+  certificateIndex: number;
+  pathValid: true;
+  revocation: {
+    crl: EvidenceFinding[];
+    ocsp: EvidenceFinding[];
+  };
 }
 
 export type EvidenceDecision =

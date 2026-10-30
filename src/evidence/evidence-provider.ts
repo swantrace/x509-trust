@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { ResourceLimitError } from "./errors.ts";
+import { ResourceLimitError } from "../errors.ts";
 import {
   type CrlLoadOptions,
   createHttpLoaders,

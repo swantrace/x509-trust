@@ -1,26 +1,30 @@
 import { X509Certificate } from "node:crypto";
-import type { CacheStore } from "./cache.ts";
-import type { CertificateInput } from "./certificate-path.ts";
-import type { CrlIndexCacheOptions } from "./crl-index-cache.ts";
-import type { DiagnosticCallback } from "./diagnostics.ts";
-import { invalidPolicy } from "./errors.ts";
-import type { EvidenceProvider } from "./evidence-provider.ts";
+import type { DiagnosticCallback } from "../diagnostics.ts";
+import type { CertificateInput } from "../engine/certificate-path.ts";
+import type { CrlIndexCacheOptions } from "../engine/crl-index-cache.ts";
+import type { PkiEngine } from "../engine/pki-engine.ts";
+import { invalidPolicy } from "../errors.ts";
+import type { CacheStore } from "../evidence/cache.ts";
+import type { EvidenceProvider } from "../evidence/evidence-provider.ts";
 import type {
   CrlLoadOptions,
   HttpOptions,
   OcspLoadOptions
-} from "./http-loaders.ts";
-import type { PkiEngine } from "./pki-engine.ts";
-import { compileTrustPolicy, type TrustPolicyInput } from "./policy.ts";
-import {
-  normalizeRuleRegistrations,
-  type TrustRuleRegistration
-} from "./rules.ts";
+} from "../evidence/http-loaders.ts";
 import {
   createTrustValidator,
   type TrustValidator,
   type ValidationResult
-} from "./trust-validator.ts";
+} from "../validator/trust-validator.ts";
+import {
+  compileTrustPolicy,
+  type PolicyVersion,
+  type TrustPolicyInput
+} from "./policy.ts";
+import {
+  normalizeRuleRegistrations,
+  type TrustRuleRegistration
+} from "./rules.ts";
 
 export interface TrustCommunityRegistration {
   communityId: string;
@@ -48,7 +52,7 @@ export interface TrustRegistryOptions {
 
 export interface TrustRegistryVerifyOptions {
   communityId: string;
-  policyVersion?: number;
+  policyVersion?: PolicyVersion;
   certificateChain: readonly CertificateInput[];
   checkDate?: Date;
 }
@@ -59,7 +63,8 @@ export interface TrustRegistry {
 }
 
 interface PolicySnapshot {
-  version: number;
+  version: PolicyVersion;
+  versionOrder: number;
   validator: TrustValidator;
 }
 
@@ -115,11 +120,17 @@ function assertVerifyOptionsShape(
   if (typeof communityId !== "string" || communityId.trim() === "") {
     throw new TypeError("communityId must be a non-empty string");
   }
-  if (
-    policyVersion !== undefined &&
-    (!Number.isSafeInteger(policyVersion) || (policyVersion as number) <= 0)
-  ) {
-    throw new TypeError("policyVersion must be a positive integer");
+  if (policyVersion !== undefined) {
+    if (typeof policyVersion === "string") {
+      if (policyVersion.trim() === "") {
+        throw new TypeError("policyVersion must be a non-empty string");
+      }
+    } else if (
+      !Number.isSafeInteger(policyVersion) ||
+      (policyVersion as number) <= 0
+    ) {
+      throw new TypeError("policyVersion must be a string or positive integer");
+    }
   }
   if (!Array.isArray(certificateChain)) {
     throw new TypeError("certificateChain must be an array");
@@ -132,7 +143,7 @@ function assertVerifyOptionsShape(
 export function createTrustRegistry(
   options: TrustRegistryOptions = {}
 ): TrustRegistry {
-  const communities = new Map<string, Map<number, PolicySnapshot>>();
+  const communities = new Map<string, Map<string, PolicySnapshot>>();
 
   return {
     register(registration): void {
@@ -145,10 +156,18 @@ export function createTrustRegistry(
         registeredRuleNames: rules.map((rule) => rule.name)
       });
       let versions = communities.get(communityId);
-      if (versions?.has(policy.version)) {
+      const versionKey = String(policy.version);
+      if (versions?.has(versionKey)) {
         throw invalidPolicy(
           `Community "${communityId}" policy version ${policy.version} is already registered`
         );
+      }
+      for (const existing of versions?.values() ?? []) {
+        if (existing.versionOrder === policy.versionOrder) {
+          throw invalidPolicy(
+            `Community "${communityId}" already has a policy with versionOrder ${policy.versionOrder}`
+          );
+        }
       }
       let trustAnchors: Uint8Array[];
       try {
@@ -169,7 +188,11 @@ export function createTrustRegistry(
         versions = new Map();
         communities.set(communityId, versions);
       }
-      versions.set(policy.version, { version: policy.version, validator });
+      versions.set(versionKey, {
+        version: policy.version,
+        versionOrder: policy.versionOrder,
+        validator
+      });
     },
 
     async verify(request): Promise<ValidationResult> {
@@ -185,12 +208,12 @@ export function createTrustRegistry(
       let snapshot: PolicySnapshot | undefined;
       if (request.policyVersion === undefined) {
         for (const candidate of versions.values()) {
-          if (!snapshot || candidate.version > snapshot.version) {
+          if (!snapshot || candidate.versionOrder > snapshot.versionOrder) {
             snapshot = candidate;
           }
         }
       } else {
-        snapshot = versions.get(request.policyVersion);
+        snapshot = versions.get(String(request.policyVersion));
       }
       if (!snapshot) {
         return {

@@ -3,8 +3,8 @@ import { X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { CertificateRevocationList } from "pkijs";
-import { type CacheStore, createMemoryCache } from "../src/cache.ts";
-import { createRevocationChecker } from "../src/revocation-checker.ts";
+import { type CacheStore, createMemoryCache } from "../src/evidence/cache.ts";
+import { createRevocationChecker } from "../src/evidence/revocation-checker.ts";
 
 function readCertificateDer(name: string): Uint8Array {
   const pem = readFileSync(new URL(`./fixtures/${name}.pem`, import.meta.url));
