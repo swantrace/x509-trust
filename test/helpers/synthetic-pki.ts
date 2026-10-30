@@ -275,6 +275,23 @@ export async function createSyntheticChain({
   return { root, intermediate, leaf: leafCertificate };
 }
 
+export async function createIntermediateForChain(
+  parent: SyntheticCertificate,
+  options: Partial<CertificateOptions> = {}
+): Promise<SyntheticCertificate> {
+  const keys = await generateKeys();
+  return createCertificate(
+    {
+      commonName: "Synthetic Intermediate",
+      ca: true,
+      pathLenConstraint: 0,
+      ...options
+    },
+    keys,
+    parent
+  );
+}
+
 export async function createLeafForChain(
   chain: Pick<SyntheticChain, "root" | "intermediate">,
   options: Partial<CertificateOptions> = {}
@@ -304,6 +321,30 @@ export async function createCrl(
     (entry) =>
       new RevokedCertificate({
         userCertificate: entry.certificate.serialNumber,
+        revocationDate: new Time({ type: 0, value: thisUpdate })
+      })
+  );
+  await crl.sign(issuer.privateKey, "SHA-256");
+  return new Uint8Array(crl.toSchema(true).toBER(false));
+}
+
+export async function createCrlWithSerials(
+  issuer: SyntheticCertificate,
+  serials: readonly number[],
+  {
+    thisUpdate = new Date("2026-10-01T00:00:00Z"),
+    nextUpdate = new Date("2026-11-01T00:00:00Z")
+  }: { thisUpdate?: Date; nextUpdate?: Date } = {}
+): Promise<Uint8Array<ArrayBuffer>> {
+  const crl = new CertificateRevocationList();
+  crl.version = 1;
+  crl.issuer = issuer.subject;
+  crl.thisUpdate = new Time({ type: 0, value: thisUpdate });
+  crl.nextUpdate = new Time({ type: 0, value: nextUpdate });
+  crl.revokedCertificates = serials.map(
+    (serial) =>
+      new RevokedCertificate({
+        userCertificate: new Integer({ value: serial }),
         revocationDate: new Time({ type: 0, value: thisUpdate })
       })
   );

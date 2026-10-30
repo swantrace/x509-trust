@@ -62,6 +62,7 @@ test("bounds active requests and rejects overload beyond the queue", async () =>
     issuerCertificate: issuer
   });
   await assert.rejects(third, ResourceLimitError);
+  assert.deepEqual(provider.stats(), { active: 1, queued: 1 });
   assert.equal(maxActive, 1);
   assert.equal(gates.size, 1);
   gates.get("http://limit.test/one")!.resolve(new Uint8Array([1]));

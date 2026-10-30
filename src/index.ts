@@ -38,7 +38,8 @@ export {
 export {
   createRequestScheduler,
   type RequestScheduler,
-  type RequestSchedulerOptions
+  type RequestSchedulerOptions,
+  type RequestSchedulerStats
 } from "./request-scheduler.ts";
 export {
   type RuleLeafFacts,

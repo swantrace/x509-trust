@@ -7,12 +7,18 @@ export interface RequestSchedulerOptions {
   queueTimeoutMs?: number;
 }
 
+export interface RequestSchedulerStats {
+  active: number;
+  queued: number;
+}
+
 export interface RequestScheduler {
   run<T>(
     origin: string,
     signal: AbortSignal | undefined,
     task: () => Promise<T>
   ): Promise<T>;
+  stats(): RequestSchedulerStats;
 }
 
 const DEFAULTS = {
@@ -110,6 +116,10 @@ export function createRequestScheduler({
   }
 
   return {
+    stats() {
+      return { active, queued: queue.length };
+    },
+
     run<T>(
       origin: string,
       signal: AbortSignal | undefined,

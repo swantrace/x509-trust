@@ -8,7 +8,8 @@ import {
 } from "./http-loaders.ts";
 import {
   createRequestScheduler,
-  type RequestSchedulerOptions
+  type RequestSchedulerOptions,
+  type RequestSchedulerStats
 } from "./request-scheduler.ts";
 
 export type CrlLoader = (
@@ -28,6 +29,7 @@ export interface EvidenceProvider {
   readonly supportsOcsp: boolean;
   loadCrl(url: string, options?: CrlLoadOptions): Promise<Uint8Array>;
   loadOcsp(options: OcspLoadOptions): Promise<Uint8Array>;
+  stats(): RequestSchedulerStats;
 }
 
 export const EVIDENCE_PROVIDER_DEFAULTS = Object.freeze({
@@ -144,6 +146,10 @@ export function createEvidenceProvider({
   return {
     supportsCrl: crlLoader !== false,
     supportsOcsp: ocspLoader !== false,
+
+    stats() {
+      return scheduler.stats();
+    },
 
     loadCrl(url, options = {}) {
       if (crlLoader === false) {
