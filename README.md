@@ -15,7 +15,7 @@ revocation evidence never becomes success.
 - Concurrent per-certificate evidence collection with authenticated-revoked
   early exit and `AbortSignal` cancellation.
 - Bounded shared evidence provider with per-origin limits and single-flight.
-- Raw DER evidence cache and bounded parsed CRL index cache.
+- Raw DER evidence cache.
 - Optional Piscina worker engine on a separate entry point.
 - Structured `findings` for diagnostics and audit.
 
@@ -35,11 +35,11 @@ npm install piscina
 import { createTrustValidator } from "x509-trust";
 
 const validator = createTrustValidator({
-  trustAnchors: [rootCertificate]
+  trustAnchors: [rootCertificate],
 });
 
 const result = await validator.verify({
-  certificateChain: [clientCertificate, intermediateCertificate]
+  certificateChain: [clientCertificate, intermediateCertificate],
 });
 
 if (result.valid) {
@@ -68,11 +68,12 @@ interface TrustValidatorOptions {
   trustAnchors: readonly CertificateInput[];
   profile?: ValidationProfileInput;
   rules?: readonly TrustRuleRegistration[];
-  loadCrl?: ((url: string, options?: CrlLoadOptions) => Promise<Uint8Array>) | false;
+  loadCrl?:
+    | ((url: string, options?: CrlLoadOptions) => Promise<Uint8Array>)
+    | false;
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
   provider?: EvidenceProvider;
   engine?: PkiEngine;
-  crlIndexCache?: CrlIndexCacheOptions | false;
   http?: HttpOptions;
   deadlineMs?: number;
   cache?: CacheStore;
@@ -102,29 +103,28 @@ function createMemoryCache(options?: {
 }): CacheStore;
 ```
 
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `trustAnchors` | Required | Nonempty set of explicitly trusted certificates, copied at construction. |
-| `profile` | Built-in strict profile | Local validation profile; compiled and frozen at construction. |
-| `rules` | None | Trusted custom rule functions. |
-| `loadCrl` | Built-in HTTP loader | Override CRL retrieval, or `false` to disable CRL checks. |
-| `loadOcsp` | Built-in HTTP loader | Override OCSP retrieval, or `false` to disable OCSP checks. |
-| `provider` | Per-validator provider | Shared provider for request bounds and single-flight. |
-| `engine` | Inline engine | Worker-backed engine from `x509-trust/worker`. |
-| `crlIndexCache` | Enabled, 8 entries / 64 MiB | Parsed CRL index cache; `false` disables it. |
-| `http.timeoutMs` | `5000` | Deadline for each HTTP request, including reading its body. |
-| `http.maxResponseBytes` | `5242880` (5 MiB) | Maximum response body size per request. |
-| `http.allowedOrigins` | No allowlist | Restrict retrieval to the listed origins. |
-| `http.allowPrivateAddresses` | `false` | Allow private or loopback destinations. |
-| `deadlineMs` | `60000` | Overall evidence-phase deadline. |
-| `cache` | In-memory, 256 entries | Storage for verified CRL and OCSP evidence. |
-| `maxCacheAgeMs` | `3600000` (1 hour) | Maximum evidence cache age, also bounded by `nextUpdate`. |
-| `cacheKeyPrefix` | `"x509-trust:revocation:v1"` | Cache namespace. |
-| `now` | `Date.now` | Clock returning epoch milliseconds. |
-| `onDiagnostic` | None | Receive cache and revocation diagnostics. |
-| `verify().certificateChain` | Required | Leaf certificate followed by intermediates. |
-| `verify().checkDate` | `now()` | Date at which to validate the path and evidence. |
-| `verify().signal` | None | Cancels verification; rejection is an `AbortError`. |
+| Option                       | Default                      | Purpose                                                                  |
+| ---------------------------- | ---------------------------- | ------------------------------------------------------------------------ |
+| `trustAnchors`               | Required                     | Nonempty set of explicitly trusted certificates, copied at construction. |
+| `profile`                    | Built-in strict profile      | Local validation profile; compiled and frozen at construction.           |
+| `rules`                      | None                         | Trusted custom rule functions.                                           |
+| `loadCrl`                    | Built-in HTTP loader         | Override CRL retrieval, or `false` to disable CRL checks.                |
+| `loadOcsp`                   | Built-in HTTP loader         | Override OCSP retrieval, or `false` to disable OCSP checks.              |
+| `provider`                   | Per-validator provider       | Shared provider for request bounds and single-flight.                    |
+| `engine`                     | Inline engine                | Worker-backed engine from `x509-trust/worker`.                           |
+| `http.timeoutMs`             | `5000`                       | Deadline for each HTTP request, including reading its body.              |
+| `http.maxResponseBytes`      | `5242880` (5 MiB)            | Maximum response body size per request.                                  |
+| `http.allowedOrigins`        | No allowlist                 | Restrict retrieval to the listed origins.                                |
+| `http.allowPrivateAddresses` | `false`                      | Allow private or loopback destinations.                                  |
+| `deadlineMs`                 | `60000`                      | Overall evidence-phase deadline.                                         |
+| `cache`                      | In-memory, 256 entries       | Storage for verified CRL and OCSP evidence.                              |
+| `maxCacheAgeMs`              | `3600000` (1 hour)           | Maximum evidence cache age, also bounded by `nextUpdate`.                |
+| `cacheKeyPrefix`             | `"x509-trust:revocation:v1"` | Cache namespace.                                                         |
+| `now`                        | `Date.now`                   | Clock returning epoch milliseconds.                                      |
+| `onDiagnostic`               | None                         | Receive cache and revocation diagnostics.                                |
+| `verify().certificateChain`  | Required                     | Leaf certificate followed by intermediates.                              |
+| `verify().checkDate`         | `now()`                      | Date at which to validate the path and evidence.                         |
+| `verify().signal`            | None                         | Cancels verification; rejection is an `AbortError`.                      |
 
 ### Validation profiles
 
@@ -200,28 +200,28 @@ const validator = createTrustValidator({
     source: {
       uri: "https://example.org/pki/profile",
       version: "3.1",
-      effectiveDate: "2026-01-01"
+      effectiveDate: "2026-01-01",
     },
     anchorSetId: "example:root-2026",
     requiredCapabilities: ["revocation:both"],
     revocation: {
       requiredEvidence: "both",
-      sourceOrder: ["crl", "ocsp"]
-    }
-  }
+      sourceOrder: ["crl", "ocsp"],
+    },
+  },
 });
 ```
 
 Defaults:
 
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `revocation.requiredEvidence` | `"any"` | `any`, `crl`, `ocsp`, or `both` must establish status. |
-| `revocation.sourceOrder` | `["ocsp", "crl"]` | Order in which advertised mechanisms are tried. |
-| `revocation.onUnknown` | `"reject"` | Unknown never becomes success. |
-| `revocation.scope` | `"non-anchor-chain"` | Every non-anchor certificate is checked. |
-| `revocation.requireNextUpdate` | `true` | Evidence must have a freshness boundary. |
-| `revocation.clockSkewMs` | `0` | No clock-skew allowance. |
+| Field                          | Default              | Meaning                                                |
+| ------------------------------ | -------------------- | ------------------------------------------------------ |
+| `revocation.requiredEvidence`  | `"any"`              | `any`, `crl`, `ocsp`, or `both` must establish status. |
+| `revocation.sourceOrder`       | `["ocsp", "crl"]`    | Order in which advertised mechanisms are tried.        |
+| `revocation.onUnknown`         | `"reject"`           | Unknown never becomes success.                         |
+| `revocation.scope`             | `"non-anchor-chain"` | Every non-anchor certificate is checked.               |
+| `revocation.requireNextUpdate` | `true`               | Evidence must have a freshness boundary.               |
+| `revocation.clockSkewMs`       | `0`                  | No clock-skew allowance.                               |
 
 `sourceOrder` controls collection order. `requiredEvidence` decides which
 mechanisms must produce a good result:
@@ -270,7 +270,7 @@ profile.rules = {
   leafKeyUsage: ["digitalSignature"],
   leafExtendedKeyUsage: ["1.3.6.1.5.5.7.3.2"],
   requiredCertificatePolicyOids: ["1.2.3.4"],
-  maxPathDepth: 3 // total certificates, including leaf and anchor
+  maxPathDepth: 3, // total certificates, including leaf and anchor
 };
 ```
 
@@ -286,13 +286,11 @@ const rules = [
   {
     name: "application-check",
     check(context: TrustRuleContext) {
-      return context.leaf.extendedKeyUsageOids?.includes(
-        "1.3.6.1.5.5.7.3.2"
-      )
+      return context.leaf.extendedKeyUsageOids?.includes("1.3.6.1.5.5.7.3.2")
         ? { ok: true as const }
         : { ok: false as const, message: "clientAuth usage is required" };
-    }
-  }
+    },
+  },
 ];
 ```
 
@@ -310,27 +308,27 @@ import { createValidationProfileRegistry } from "x509-trust";
 
 const registry = createValidationProfileRegistry({
   loadCrl: readCrlFromStorage,
-  loadOcsp: false
+  loadOcsp: false,
 });
 
 registry.register({
   trustAnchors: [profileARoot],
   profile: profileA,
-  rules: profileARules
+  rules: profileARules,
 });
 
 registry.register({
   trustAnchors: [profileBRoot],
   profile: {
     ...profileB,
-    version: 2
-  }
+    version: 2,
+  },
 });
 
 const result = await registry.verify({
   profileId: "profile-a",
   profileVersion: 2, // optional; highest registered version otherwise
-  certificateChain: [clientCertificate, intermediateCertificate]
+  certificateChain: [clientCertificate, intermediateCertificate],
 });
 ```
 
@@ -361,7 +359,7 @@ const profileId = `udap:${frameworkIdentifier}`;
 
 registry.register({
   trustAnchors: approvedUdapAnchors,
-  profile: { ...udapProfile, id: profileId }
+  profile: { ...udapProfile, id: profileId },
 });
 
 await registry.verify({ profileId, certificateChain });
@@ -466,16 +464,16 @@ type ValidationResult =
     };
 ```
 
-| Failure code | Meaning |
-| --- | --- |
-| `INVALID_CERTIFICATE` | A supplied certificate could not be parsed. |
-| `INVALID_CERTIFICATE_PATH` | No valid path to a configured anchor was found, including signature or date failures. |
-| `CERTIFICATE_REVOKED` | Authenticated evidence reports that a path certificate is revoked. |
-| `REVOCATION_STATUS_UNKNOWN` | Revocation status could not be established. |
-| `PROFILE_REJECTED` | A profile rule rejected an otherwise valid result. |
-| `UNKNOWN_PROFILE` | A registry request named a profile that is not registered. |
-| `UNKNOWN_PROFILE_VERSION` | The profile exists but the requested version is not registered. |
-| `RESOURCE_LIMIT_EXCEEDED` | The request queue, queue wait, or overall deadline was exceeded. |
+| Failure code                | Meaning                                                                               |
+| --------------------------- | ------------------------------------------------------------------------------------- |
+| `INVALID_CERTIFICATE`       | A supplied certificate could not be parsed.                                           |
+| `INVALID_CERTIFICATE_PATH`  | No valid path to a configured anchor was found, including signature or date failures. |
+| `CERTIFICATE_REVOKED`       | Authenticated evidence reports that a path certificate is revoked.                    |
+| `REVOCATION_STATUS_UNKNOWN` | Revocation status could not be established.                                           |
+| `PROFILE_REJECTED`          | A profile rule rejected an otherwise valid result.                                    |
+| `UNKNOWN_PROFILE`           | A registry request named a profile that is not registered.                            |
+| `UNKNOWN_PROFILE_VERSION`   | The profile exists but the requested version is not registered.                       |
+| `RESOURCE_LIMIT_EXCEEDED`   | The request queue, queue wait, or overall deadline was exceeded.                      |
 
 Revocation failures include `certificateIndex`, the zero-based position in the
 validated path (`0` is the leaf). Use `code` for application decisions and
@@ -524,14 +522,14 @@ checks revocation for the leaf and every intermediate. The configured anchor
 itself is not checked for revocation; applications control trust in it through
 `trustAnchors`.
 
-| Evidence | Support |
-| --- | --- |
-| Complete CRLs signed directly by the certificate issuer | Supported. |
-| OCSP responses signed directly by the certificate issuer | Supported. |
-| Delegated OCSP responders | Not supported. |
-| Delta CRLs | Not supported. |
-| Scoped or indirect CRLs | Not supported. |
-| OCSP responses without `nextUpdate` | Not accepted; treated as unknown. |
+| Evidence                                                 | Support                           |
+| -------------------------------------------------------- | --------------------------------- |
+| Complete CRLs signed directly by the certificate issuer  | Supported.                        |
+| OCSP responses signed directly by the certificate issuer | Supported.                        |
+| Delegated OCSP responders                                | Not supported.                    |
+| Delta CRLs                                               | Not supported.                    |
+| Scoped or indirect CRLs                                  | Not supported.                    |
+| OCSP responses without `nextUpdate`                      | Not accepted; treated as unknown. |
 
 Both CRL and OCSP evidence must have a usable `nextUpdate`. This is a library
 freshness requirement. Before using the library with a CA, confirm that its PKI
@@ -544,10 +542,7 @@ To enforce application-wide limits across validators or profiles, create one
 provider explicitly:
 
 ```typescript
-import {
-  createEvidenceProvider,
-  createTrustValidator
-} from "x509-trust";
+import { createEvidenceProvider, createTrustValidator } from "x509-trust";
 
 const provider = createEvidenceProvider({
   loadCrl: readCrlFromStorage,
@@ -555,22 +550,22 @@ const provider = createEvidenceProvider({
   maxActiveRequests: 8,
   maxQueuedRequests: 32,
   maxActivePerOrigin: 4,
-  queueTimeoutMs: 30000
+  queueTimeoutMs: 30000,
 });
 
 const validator = createTrustValidator({
   trustAnchors: [rootCertificate],
   provider,
-  deadlineMs: 60000
+  deadlineMs: 60000,
 });
 ```
 
-| Provider option | Default | Meaning |
-| --- | --- | --- |
-| `maxActiveRequests` | `8` | Simultaneous evidence downloads across the provider. |
-| `maxQueuedRequests` | `32` | Requests waiting for a slot; excess is rejected. |
-| `maxActivePerOrigin` | `4` | Simultaneous downloads per URL origin. |
-| `queueTimeoutMs` | `30000` | Maximum time waiting for a slot. |
+| Provider option      | Default | Meaning                                              |
+| -------------------- | ------- | ---------------------------------------------------- |
+| `maxActiveRequests`  | `8`     | Simultaneous evidence downloads across the provider. |
+| `maxQueuedRequests`  | `32`    | Requests waiting for a slot; excess is rejected.     |
+| `maxActivePerOrigin` | `4`     | Simultaneous downloads per URL origin.               |
+| `queueTimeoutMs`     | `30000` | Maximum time waiting for a slot.                     |
 
 Queue-full, queue-timeout, and verification-deadline conditions return
 `RESOURCE_LIMIT_EXCEEDED`.
@@ -599,28 +594,27 @@ import { createWorkerPkiEngine } from "x509-trust/worker";
 const engine = createWorkerPkiEngine({
   maxThreads: 2,
   maxQueue: 16,
-  taskTimeoutMs: 5000
+  taskTimeoutMs: 5000,
 });
 
 const validator = createTrustValidator({
   trustAnchors: [rootCertificate],
   provider,
-  engine
+  engine,
 });
 
 // The caller owns the pool and must release it.
 await engine.close({ force: true });
 ```
 
-| Worker option | Default | Meaning |
-| --- | --- | --- |
-| `maxThreads` | `min(4, availableParallelism - 1)` | Maximum worker threads. |
-| `minThreads` | `0` | Threads kept ready. |
-| `maxQueue` | `maxThreads * 4` | Tasks waiting for a worker. |
-| `idleTimeout` | `30000` | Idle worker shutdown delay. |
-| `taskTimeoutMs` | `10000` | Per-task deadline. |
-| `crlIndexCache` | Enabled, 8 entries / 64 MiB | Worker-local parsed CRL index cache. |
-| `filename` | Packaged worker | Override only when embedding the worker file. |
+| Worker option   | Default                            | Meaning                                       |
+| --------------- | ---------------------------------- | --------------------------------------------- |
+| `maxThreads`    | `min(4, availableParallelism - 1)` | Maximum worker threads.                       |
+| `minThreads`    | `0`                                | Threads kept ready.                           |
+| `maxQueue`      | `maxThreads * 4`                   | Tasks waiting for a worker.                   |
+| `idleTimeout`   | `30000`                            | Idle worker shutdown delay.                   |
+| `taskTimeoutMs` | `10000`                            | Per-task deadline.                            |
+| `filename`      | Packaged worker                    | Override only when embedding the worker file. |
 
 Only DER bytes and JSON-compatible DTOs cross the thread boundary. HTTP, request
 scheduling, single-flight, caching, diagnostics, registered rules, and
@@ -632,42 +626,8 @@ Aborting a task terminates its worker; the pool replaces it. Aborting a queued
 task rejects it without terminating a running task. Inline and worker modes
 produce the same success and failure results for the same inputs.
 
-Worker execution is optional and not the default. Use
-[docs/benchmark.md](docs/benchmark.md) and
-[docs/concurrency-benchmark.md](docs/concurrency-benchmark.md) to choose based on
-measurements for the target deployment.
-
-## Parsed CRL index cache
-
-The inline engine keeps a bounded parsed CRL index cache by default. It stores
-the parsed CRL, a serial-number `Set`, and the unsupported-extension result,
-keyed by SHA-256 of the CRL DER.
-
-Every use still checks issuer, `thisUpdate`/`nextUpdate`, signature, and
-certificate applicability. The certificate result is computed from the cached
-serial set and is never stored as a status conclusion. A changed CRL DER has a
-different key and is parsed separately. Entries are bounded by count and
-approximate bytes (defaults: 8 entries, 64 MiB) with LRU eviction; there is no
-independent trust TTL.
-
-```typescript
-createTrustValidator({
-  trustAnchors: [rootCertificate],
-  provider,
-  crlIndexCache: { maxEntries: 16, maxBytes: 128 * 1024 * 1024 }
-});
-
-// Or disable it:
-createTrustValidator({
-  trustAnchors: [rootCertificate],
-  crlIndexCache: false
-});
-```
-
-Worker caches are per worker thread and are not shared between workers. The raw
-DER cache and HTTP single-flight remain on the main thread. The benchmark in
-[docs/benchmark.md](docs/benchmark.md) separates isolated CRL validation from
-full path plus evidence validation.
+Worker execution is optional and not the default. Choose it based on
+measurements for the target deployment, not as a throughput default.
 
 ## Concurrency, early rejection, and cancellation
 
@@ -728,8 +688,8 @@ const validator = createTrustValidator({
   http: {
     allowedOrigins: ["https://ca.example.org", "http://ocsp.example.org"],
     timeoutMs: 5000,
-    maxResponseBytes: 5 * 1024 * 1024
-  }
+    maxResponseBytes: 5 * 1024 * 1024,
+  },
 });
 ```
 
@@ -748,7 +708,7 @@ returned evidence.
 const validator = createTrustValidator({
   trustAnchors: [rootCertificate],
   loadCrl: async (url) => readCrlFromStorage(url),
-  loadOcsp: false
+  loadOcsp: false,
 });
 ```
 
@@ -771,7 +731,7 @@ const validator = createTrustValidator({
   trustAnchors: [rootCertificate],
   onDiagnostic(event) {
     logger.debug(event);
-  }
+  },
 });
 ```
 
@@ -841,47 +801,10 @@ const validator = createTrustValidator({
     },
     async delete(key) {
       await redisClient.del(key);
-    }
-  }
+    },
+  },
 });
 ```
 
 The application owns the Redis connection. Cache values are strings and TTLs
 are milliseconds.
-
-## Benchmark
-
-```sh
-npm run benchmark
-npm run benchmark:concurrency
-```
-
-`benchmark` generates `docs/benchmark.md` from synthetic certificates, signed
-CRL/OCSP evidence, and a local HTTP server. It reports cold and warm validation,
-slow sources, early revocation, OCSP-to-CRL fallback, single-flight bursts, a
-large cached CRL, and inline/worker CPU path work.
-
-`benchmark:concurrency` generates `docs/concurrency-benchmark.md`. It runs
-closed-loop concurrent validations while polling a health endpoint in the same
-process, reporting throughput, health latency, event-loop delay, CPU, RSS, and
-worker queue depth.
-
-Benchmarks are measurement tools, not unit-test gates. Results are local
-measurements, not a production SLA.
-
-## Package and deployment
-
-- Node.js 24 or later; ESM only.
-- Public entry points: `x509-trust` via `./dist/index.js` and
-  `./dist/index.d.ts`; `x509-trust/worker` via `./dist/worker.js` and
-  `./dist/worker.d.ts`.
-- Runtime dependencies: `asn1js` and `pkijs`. `piscina` is an optional peer
-  dependency required only by `x509-trust/worker`; the main entry point does not
-  load Piscina or create worker threads.
-- The worker file is included in `dist` and resolved relative to the installed
-  package, including from a tarball.
-- `npm pack` contains `dist`, `package.json`, and `README.md`. It excludes
-  `.dsh`, PDFs, tests, benchmark sources, fixtures, profiles, examples, native
-  artifacts, private keys, and stale build output. Builds remove `dist` first.
-- Profiles remain host-owned data.
-- No database, UI framework, or web server is part of this package.

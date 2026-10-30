@@ -1,7 +1,6 @@
 export type { DiagnosticCallback, DiagnosticEvent } from "./diagnostics.ts";
 export { getUriSubjectAlternativeNames } from "./engine/certificate-names.ts";
 export type { CertificateInput } from "./engine/certificate-path.ts";
-export type { CrlIndexCacheOptions } from "./engine/crl-index-cache.ts";
 export type {
   CertificateFacts,
   KeyUsageName,

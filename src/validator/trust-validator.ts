@@ -1,10 +1,6 @@
 import { X509Certificate } from "node:crypto";
 import type { DiagnosticCallback } from "../diagnostics.ts";
 import type { CertificateInput } from "../engine/certificate-path.ts";
-import {
-  type CrlIndexCacheOptions,
-  createCrlIndexCache
-} from "../engine/crl-index-cache.ts";
 import type { ValidatedLeafCertificate } from "../engine/leaf-certificate.ts";
 import { createInlinePkiEngine, type PkiEngine } from "../engine/pki-engine.ts";
 import { invalidProfile, ResourceLimitError } from "../errors.ts";
@@ -47,7 +43,6 @@ export interface TrustValidatorOptions {
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
   provider?: EvidenceProvider;
   engine?: PkiEngine;
-  crlIndexCache?: CrlIndexCacheOptions | false;
   http?: HttpOptions;
   deadlineMs?: number;
   cache?: CacheStore;
@@ -114,7 +109,6 @@ export function createTrustValidator({
   loadOcsp,
   provider,
   engine: providedEngine,
-  crlIndexCache,
   http,
   deadlineMs = 60_000,
   cache,
@@ -150,17 +144,7 @@ export function createTrustValidator({
   const ocspLoader: OcspLoader | false = evidenceProvider.supportsOcsp
     ? (options) => evidenceProvider.loadOcsp(options)
     : false;
-  if (providedEngine && crlIndexCache !== undefined) {
-    throw invalidProfile(
-      "Configure crlIndexCache on the provided engine, not beside it"
-    );
-  }
-  const engine =
-    providedEngine ??
-    createInlinePkiEngine({
-      crlIndexCache:
-        crlIndexCache === false ? false : createCrlIndexCache(crlIndexCache)
-    });
+  const engine = providedEngine ?? createInlinePkiEngine();
   const mandatory =
     profile.revocation.requiredEvidence === "any"
       ? []

@@ -41,8 +41,6 @@
     "format": "biome check --write .",
     "format:check": "biome check .",
     "test": "node --test test/*.test.ts",
-    "benchmark": "node bench/benchmark.ts",
-    "benchmark:concurrency": "node bench/concurrency.ts",
     "prepare": "husky && npm run build",
     "prepack": "npm run build"
   },

@@ -1,7 +1,6 @@
 import { X509Certificate } from "node:crypto";
 import type { DiagnosticCallback } from "../diagnostics.ts";
 import type { CertificateInput } from "../engine/certificate-path.ts";
-import type { CrlIndexCacheOptions } from "../engine/crl-index-cache.ts";
 import type { PkiEngine } from "../engine/pki-engine.ts";
 import { invalidProfile } from "../errors.ts";
 import type { CacheStore } from "../evidence/cache.ts";
@@ -39,7 +38,6 @@ export interface ValidationProfileRegistryOptions {
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
   provider?: EvidenceProvider;
   engine?: PkiEngine;
-  crlIndexCache?: CrlIndexCacheOptions | false;
   http?: HttpOptions;
   deadlineMs?: number;
   cache?: CacheStore;

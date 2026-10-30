@@ -10,12 +10,6 @@ import {
   id_IssuingDistributionPoint,
   id_KeyUsage
 } from "pkijs";
-import {
-  type CrlIndex,
-  type CrlIndexCache,
-  crlDerHash,
-  serialNumberKey
-} from "./crl-index-cache.ts";
 
 const CRL_SIGN_KEY_USAGE = 0x02;
 const SUPPORTED_CRITICAL_EXTENSIONS = new Set([
@@ -85,59 +79,32 @@ export async function validateCrl({
   certificate,
   issuerCertificate,
   crl: crlDer,
-  checkDate = new Date(),
-  indexCache
+  checkDate = new Date()
 }: {
   certificate: Certificate;
   issuerCertificate: Certificate;
   crl: Uint8Array;
   checkDate?: Date;
-  indexCache?: CrlIndexCache;
 }): Promise<CrlValidationResult> {
   if (Number.isNaN(checkDate.getTime())) {
     throw new TypeError("checkDate must be a valid date");
   }
 
   const der = Uint8Array.from(crlDer);
-  const derHash = indexCache ? crlDerHash(der) : undefined;
-  let index: CrlIndex | undefined;
-  if (derHash && indexCache) {
-    const cached = indexCache.get(derHash);
-    if (cached?.derHash === derHash) index = cached;
-  }
   let crl: CertificateRevocationList;
-  if (index) {
-    crl = index.crl;
-  } else {
-    try {
-      const parsed = fromBER(der);
-      if (parsed.offset < 0 || parsed.offset !== der.byteLength) {
-        return unknownCrlStatus(
-          "INVALID_CRL",
-          "CRL DER must contain exactly one value"
-        );
-      }
-      crl = new CertificateRevocationList({
-        schema: parsed.result as never
-      });
-    } catch {
-      return unknownCrlStatus("INVALID_CRL", "Unable to parse the DER CRL");
-    }
-    if (indexCache && derHash) {
-      const serials = new Set<string>(
-        (crl.revokedCertificates ?? []).map((entry) =>
-          serialNumberKey(entry.userCertificate)
-        )
+  try {
+    const parsed = fromBER(der);
+    if (parsed.offset < 0 || parsed.offset !== der.byteLength) {
+      return unknownCrlStatus(
+        "INVALID_CRL",
+        "CRL DER must contain exactly one value"
       );
-      index = {
-        derHash,
-        crl,
-        serials,
-        unsupportedExtensions: hasUnsupportedExtensions(crl),
-        bytes: der.byteLength + serials.size * 32
-      };
-      indexCache.set(index);
     }
+    crl = new CertificateRevocationList({
+      schema: parsed.result as never
+    });
+  } catch {
+    return unknownCrlStatus("INVALID_CRL", "Unable to parse the DER CRL");
   }
 
   if (
@@ -155,7 +122,7 @@ export async function validateCrl({
       "The issuer must be a CA permitted to sign CRLs"
     );
   }
-  if (index?.unsupportedExtensions ?? hasUnsupportedExtensions(crl)) {
+  if (hasUnsupportedExtensions(crl)) {
     return unknownCrlStatus(
       "UNSUPPORTED_CRL",
       "Only direct, complete CRLs without scope restrictions are supported"
@@ -211,9 +178,7 @@ export async function validateCrl({
     );
   }
 
-  const revoked = index
-    ? index.serials.has(serialNumberKey(certificate.serialNumber))
-    : crl.isCertificateRevoked(certificate);
+  const revoked = crl.isCertificateRevoked(certificate);
 
   return {
     status: revoked ? "revoked" : "good",

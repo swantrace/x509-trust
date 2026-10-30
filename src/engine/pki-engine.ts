@@ -12,7 +12,6 @@ import {
   validateCertificatePath
 } from "./certificate-path.ts";
 import { type CrlValidationResult, validateCrl } from "./crl.ts";
-import { type CrlIndexCache, createCrlIndexCache } from "./crl-index-cache.ts";
 import {
   type CertificateFacts,
   extractCertificateFacts,
@@ -239,13 +238,7 @@ async function createOcspRequest(
   return new Uint8Array(request.toSchema(true).toBER(false));
 }
 
-export interface InlinePkiEngineOptions {
-  crlIndexCache?: CrlIndexCache | false;
-}
-
-export function createInlinePkiEngine({
-  crlIndexCache = createCrlIndexCache()
-}: InlinePkiEngineOptions = {}): PkiEngine {
+export function createInlinePkiEngine(): PkiEngine {
   return {
     async preparePath({ certificateChain, trustAnchors, checkDateMs, signal }) {
       signal?.throwIfAborted();
@@ -397,12 +390,9 @@ export function createInlinePkiEngine({
         return await validateCrl({
           certificate,
           issuerCertificate,
-          // Exact-DER validation happens inside validateCrl on a cache miss.
-          // On a parsed-index hit the same bytes were already checked.
           crl: snapshotBinary(crl, "CRL"),
           checkDate:
-            checkDateMs === undefined ? undefined : new Date(checkDateMs),
-          indexCache: crlIndexCache || undefined
+            checkDateMs === undefined ? undefined : new Date(checkDateMs)
         });
       } catch {
         return {
