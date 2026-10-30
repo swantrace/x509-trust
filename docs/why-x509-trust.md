@@ -219,6 +219,61 @@ JWT iss/aud/jti、OAuth、业务授权
 
 示例见 [examples/udap/README.md](../examples/udap/README.md)。
 
+### 多个社区共享 anchor 时的空白
+
+UDAP registration 要求修改注册时使用“same trust community”的证书、相同的 `iss`，并且不得覆盖其他 community 下的注册。参见 [Modifying and Cancelling Registrations](https://build.fhir.org/ig/HL7/fhir-udap-security-ig/registration.html#modifying-and-cancelling-registrations)。
+
+但当前 IG **没有在 software statement 中定义 `community` claim**，也没有规定 registration request 必须携带 community 参数。`community` 这个显式参数只定义在 discovery metadata 请求中。
+
+这留下一个真实问题：
+
+```text
+community A 和 community B 信任同一个 root
+software_statement.x5c 能链到这个 root
+  → 用 A 的 anchors 验证成功
+  → 用 B 的 anchors 也验证成功
+```
+
+此时证书链只能证明“可达共同 root”，不能证明“属于 A 而不是 B”。这不是密码学能单独解决的问题，而是治理映射问题。可能的宿主侧信号包括：
+
+- registration endpoint / tenant / deployment context；
+- 已存在的注册记录，按 `(community, iss)` 隔离；
+- 可选的、非标准的 community hint；
+- 证书里的 community 约定 policy OID；
+- 人工审批或社区目录。
+
+`x509-trust` 不尝试从证书推断 community。它只验证“这条链是否到达当前 profile 配置的 anchor”；`profileId` 的选择和 `(community, iss)` 注册命名空间属于 UDAP adapter。
+
+### 两个 root 是否“同一个”
+
+判断“同一个 root”时，要先定义“同一个”指什么：
+
+| 比较方式 | 能证明什么 | 注意 |
+| --- | --- | --- |
+| 原始 DER 字节 / SHA-256 fingerprint | 是同一张证书 | 最严格；适合判断两个 anchor bundle 是否包含完全相同的证书 |
+| SubjectPublicKeyInfo (SPKI) SHA-256 | 使用同一把公钥 | 可能是重新签发、cross-sign 或不同有效期的证书 |
+| Subject/Issuer DN | 名称相同 | 不能作为安全相等判断，名称不唯一 |
+| 证书链验证 | 能到达某个 anchor | 不能区分共享同一 anchor 的多个 community |
+
+```ts
+import { createHash, X509Certificate } from "node:crypto";
+
+function certificateFingerprint(der: Uint8Array): string {
+  return createHash("sha256").update(der).digest("hex");
+}
+
+function publicKeyFingerprint(der: Uint8Array): string {
+  const certificate = new X509Certificate(der);
+  const spki = certificate.publicKey.export({
+    type: "spki",
+    format: "der"
+  });
+  return createHash("sha256").update(spki).digest("hex");
+}
+```
+
+如果两个社区的 anchor bundle 包含完全相同的 DER 证书，它们就是证书级共享；如果只是 SPKI 相同，则是密钥级共享，anchor 证书的有效期和约束仍可能不同。两种情况都可能让“证书链验证”无法区分 community。
+
 ## 代码对应关系
 
 | 设计 | 主要实现 |
