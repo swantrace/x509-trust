@@ -72,6 +72,44 @@ test("public API validates a full path using CRLs for leaf and intermediate", as
     "http://crl.example.test/intermediate.crl",
     "http://crl.example.test/root.crl"
   ]);
+  assert.ok(result.valid);
+  assert.equal(
+    result.leafCertificate.fingerprint256,
+    new X509Certificate(leaf).fingerprint256
+  );
+  assert.deepEqual(result.leafCertificate.uriSubjectAlternativeNames, [
+    "https://client.example.org/app"
+  ]);
+  assert.deepEqual(result.leafCertificate.keyUsages, ["digitalSignature"]);
+  assert.deepEqual(
+    result.evidence.map(({ certificateIndex, mechanism, status }) => ({
+      certificateIndex,
+      mechanism,
+      status
+    })),
+    [
+      { certificateIndex: 0, mechanism: "crl", status: "good" },
+      { certificateIndex: 1, mechanism: "crl", status: "good" }
+    ]
+  );
+  assert.ok(
+    result.evidence.every(
+      (entry) => entry.authenticated && entry.fresh && entry.checkedAtMs > 0
+    )
+  );
+
+  // Results are independent snapshots: mutating them must not change trust.
+  result.leafCertificate.der.fill(0);
+  result.leafCertificate.publicKeySpkiDer.fill(0);
+  result.certificatePath[0].fill(0);
+  const repeated = await validator.verify({
+    certificateChain: [leaf, intermediate]
+  });
+  assert.equal(repeated.valid, true);
+  assert.equal(
+    repeated.leafCertificate.fingerprint256,
+    new X509Certificate(leaf).fingerprint256
+  );
 });
 
 test("public API supports OCSP callbacks with DER certificate and issuer context", async () => {
@@ -120,6 +158,12 @@ test("rejects a revoked client and stops before checking the intermediate", asyn
   assert.equal(result.code, "CERTIFICATE_REVOKED");
   assert.equal(result.certificateIndex, 0);
   assert.equal(loads, 1);
+  assert.equal("leafCertificate" in result, false);
+  assert.equal(result.evidence?.length, 1);
+  assert.deepEqual(
+    result.evidence?.map(({ mechanism, status }) => ({ mechanism, status })),
+    [{ mechanism: "crl", status: "revoked" }]
+  );
 });
 
 test("a good leaf status is insufficient when intermediate status cannot be established", async () => {
@@ -174,6 +218,7 @@ test("rejects invalid, untrusted and expired paths before calling loaders", asyn
   });
   assert.equal(expired.valid, false);
   assert.equal(expired.code, "INVALID_CERTIFICATE_PATH");
+  assert.equal("leafCertificate" in expired, false);
   assert.equal(loads, 0);
 });
 

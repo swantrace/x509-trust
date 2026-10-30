@@ -28,7 +28,12 @@ type CrlFailureCode =
   | "UNSUPPORTED_CRL";
 
 export type CrlValidationResult =
-  | { status: "good" | "revoked"; thisUpdate: Date; nextUpdate: Date }
+  | {
+      status: "good" | "revoked";
+      thisUpdate: Date;
+      nextUpdate: Date;
+      checkedAt: Date;
+    }
   | { status: "unknown"; code: CrlFailureCode; message: string };
 
 function unknownCrlStatus(
@@ -166,6 +171,7 @@ export async function validateCrl({
   return {
     status: crl.isCertificateRevoked(certificate) ? "revoked" : "good",
     thisUpdate,
-    nextUpdate
+    nextUpdate,
+    checkedAt: checkDate
   };
 }

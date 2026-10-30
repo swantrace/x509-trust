@@ -80,7 +80,7 @@ test("prepares a validated path with DER snapshots and revocation targets", asyn
   ]);
   assert.ok(result.certificates[0].ocspRequestDer);
   assert.equal(result.certificates[2].issuerDer, undefined);
-  assert.deepEqual(result.leafUriSubjectAlternativeNames, [
+  assert.deepEqual(result.leafCertificate.uriSubjectAlternativeNames, [
     "https://client.example.org/app"
   ]);
   const snapshot = result.certificatePath[0];

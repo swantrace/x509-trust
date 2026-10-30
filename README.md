@@ -119,18 +119,57 @@ type ValidationFailureCode =
   | "CERTIFICATE_REVOKED"
   | "REVOCATION_STATUS_UNKNOWN";
 
+type KeyUsageName =
+  | "digitalSignature"
+  | "nonRepudiation"
+  | "keyEncipherment"
+  | "dataEncipherment"
+  | "keyAgreement"
+  | "keyCertSign"
+  | "cRLSign"
+  | "encipherOnly"
+  | "decipherOnly";
+
+interface ValidatedLeafCertificate {
+  publicKeySpkiDer: Uint8Array;
+  uriSubjectAlternativeNames: string[];
+  fingerprint256: string;
+  serialNumber: string;
+  notBeforeMs: number;
+  notAfterMs: number;
+  subject: string;
+  issuer: string;
+  keyUsages?: KeyUsageName[];
+  extendedKeyUsageOids?: string[];
+  certificatePolicyOids?: string[];
+  der: Uint8Array;
+}
+
+interface EvidenceSummary {
+  certificateIndex: number;
+  mechanism: "crl" | "ocsp";
+  status: "good" | "revoked";
+  authenticated: true;
+  fresh: true;
+  thisUpdateMs: number;
+  nextUpdateMs: number;
+  checkedAtMs: number;
+}
+
 type ValidationResult =
   | {
       valid: true;
       certificatePath: Uint8Array[];
       trustAnchorFingerprint256: string;
-      leafUriSubjectAlternativeNames: string[];
+      leafCertificate: ValidatedLeafCertificate;
+      evidence: EvidenceSummary[];
     }
   | {
       valid: false;
       code: ValidationFailureCode;
       message: string;
       certificateIndex?: number;
+      evidence?: EvidenceSummary[];
     };
 ```
 
@@ -139,12 +178,43 @@ first and including the selected trust anchor. `trustAnchorFingerprint256` is
 that anchor's SHA-256 fingerprint. These fields let applications inspect the
 selected path or record which anchor established trust.
 
-`leafUriSubjectAlternativeNames` contains the leaf certificate's URI SAN entries,
-in their original order and without normalization. It is empty when the leaf has
-no URI SANs. Applications can use these values for protocol-specific issuer
-matching without parsing the certificate again. This field is returned only
-after path and revocation validation succeed; the library does not perform JWT
-issuer matching.
+`leafCertificate` is returned only after the path and every required revocation
+check succeed. It contains identity and key metadata, not policy or transport
+state. All byte fields are independent snapshots: changing them does not change
+the validator, its trust anchors, its cache, or a later result.
+
+- `publicKeySpkiDer` is the DER `SubjectPublicKeyInfo`; it imports directly with
+  Node.js `createPublicKey({ key, format: "der", type: "spki" })`.
+- `uriSubjectAlternativeNames` preserves URI SAN strings exactly, in certificate
+  order, without case or trailing-slash normalization.
+- `fingerprint256` is uppercase colon-separated SHA-256. `serialNumber` is
+  uppercase hex without colons or DER sign padding.
+- `notBeforeMs` and `notAfterMs` are Unix epoch milliseconds.
+- `subject` and `issuer` are display strings for diagnostics. Never compare
+  them for security decisions; path matching uses structured distinguished
+  names inside the validation engine.
+- `keyUsages` is a named BIT STRING set, not a list of OIDs. `keyUsages`,
+  `extendedKeyUsageOids`, and `certificatePolicyOids` are `undefined` when the
+  extension is absent. Present but malformed or duplicate extensions are
+  rejected rather than reported as absent.
+
+`evidence` lists the authenticated, fresh evidence that established each
+non-anchor certificate's status. It includes the certificate index, mechanism,
+status, the evidence `thisUpdate`/`nextUpdate`, and the time at which it was
+checked. A revoked failure includes the revoked evidence summary; failures that
+cannot authenticate evidence expose no positive evidence claim.
+
+### Migrating from the top-level SAN field
+
+Earlier versions returned `result.leafUriSubjectAlternativeNames`. That duplicate
+field has been removed; use:
+
+```typescript
+const uris = result.leafCertificate.uriSubjectAlternativeNames;
+```
+
+The standalone `getUriSubjectAlternativeNames()` helper is unchanged and remains
+useful for parsing a certificate before validation.
 
 | Failure code                  | Meaning                                                                               |
 | ----------------------------- | ------------------------------------------------------------------------------------- |

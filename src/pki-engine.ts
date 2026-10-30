@@ -7,12 +7,15 @@ import {
   id_KeyUsage,
   OCSPRequest
 } from "pkijs";
-import { uriSubjectAlternativeNames } from "./certificate-names.ts";
 import {
   type CertificateInput,
   validateCertificatePath
 } from "./certificate-path.ts";
 import { type CrlValidationResult, validateCrl } from "./crl.ts";
+import {
+  extractLeafCertificate,
+  type ValidatedLeafCertificate
+} from "./leaf-certificate.ts";
 import { type OcspValidationResult, validateOcsp } from "./ocsp.ts";
 import { getRevocationEndpoints } from "./revocation-endpoints.ts";
 
@@ -52,7 +55,7 @@ export type PreparedPathResult =
       certificatePath: Uint8Array[];
       trustAnchorFingerprint256: string;
       certificates: PreparedCertificate[];
-      leafUriSubjectAlternativeNames: string[];
+      leafCertificate: ValidatedLeafCertificate;
     }
   | {
       pathValid: false;
@@ -325,6 +328,20 @@ export function createInlinePkiEngine(): PkiEngine {
           });
         }
 
+        let leafCertificate: ValidatedLeafCertificate;
+        try {
+          leafCertificate = extractLeafCertificate(
+            certificates[0],
+            path.certificatePath[0]
+          );
+        } catch {
+          return {
+            pathValid: false,
+            code: "INVALID_CERTIFICATE",
+            message: "Invalid leaf certificate metadata"
+          };
+        }
+
         return {
           pathValid: true,
           certificatePath: path.certificatePath.map((der) =>
@@ -332,9 +349,7 @@ export function createInlinePkiEngine(): PkiEngine {
           ),
           trustAnchorFingerprint256: path.trustAnchorFingerprint256,
           certificates: prepared,
-          leafUriSubjectAlternativeNames: uriSubjectAlternativeNames(
-            certificates[0]
-          )
+          leafCertificate
         };
       } catch {
         return {

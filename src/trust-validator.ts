@@ -8,6 +8,7 @@ import {
   type HttpOptions,
   type OcspLoadOptions
 } from "./http-loaders.ts";
+import type { ValidatedLeafCertificate } from "./leaf-certificate.ts";
 import type { OcspValidationResult } from "./ocsp.ts";
 import {
   createInlinePkiEngine,
@@ -38,18 +39,31 @@ export type ValidationFailureCode =
   | "CERTIFICATE_REVOKED"
   | "REVOCATION_STATUS_UNKNOWN";
 
+export interface EvidenceSummary {
+  certificateIndex: number;
+  mechanism: "crl" | "ocsp";
+  status: "good" | "revoked";
+  authenticated: true;
+  fresh: true;
+  thisUpdateMs: number;
+  nextUpdateMs: number;
+  checkedAtMs: number;
+}
+
 export type ValidationResult =
   | {
       valid: true;
       certificatePath: Uint8Array[];
       trustAnchorFingerprint256: string;
-      leafUriSubjectAlternativeNames: string[];
+      leafCertificate: ValidatedLeafCertificate;
+      evidence: EvidenceSummary[];
     }
   | {
       valid: false;
       code: ValidationFailureCode;
       message: string;
       certificateIndex?: number;
+      evidence?: EvidenceSummary[];
     };
 
 export interface TrustValidator {
@@ -57,7 +71,7 @@ export interface TrustValidator {
 }
 
 type CertificateRevocation =
-  | { status: "good" | "revoked" }
+  | { status: "good" | "revoked"; evidence: EvidenceSummary }
   | { status: "unknown"; message: string };
 
 export function createTrustValidator({
@@ -94,41 +108,46 @@ export function createTrustValidator({
     certificateIndex: number,
     checkDateMs?: number
   ): Promise<CertificateRevocation> {
-    const attempts: Array<
-      () => Promise<CrlValidationResult | OcspValidationResult>
-    > = [];
+    const attempts: Array<{
+      mechanism: "crl" | "ocsp";
+      run: () => Promise<CrlValidationResult | OcspValidationResult>;
+    }> = [];
     if (ocspLoader) {
       for (const url of prepared.ocspUrls) {
-        attempts.push(() =>
-          checker.checkOcsp({
-            certificateDer: prepared.der,
-            issuerDer: prepared.issuerDer!,
-            source: url,
-            certificateIndex,
-            checkDateMs,
-            ocspRequestDer: prepared.ocspRequestDer!,
-            load: () =>
-              ocspLoader({
-                url,
-                certificate: Uint8Array.from(prepared.der),
-                issuerCertificate: Uint8Array.from(prepared.issuerDer!)
-              })
-          })
-        );
+        attempts.push({
+          mechanism: "ocsp",
+          run: () =>
+            checker.checkOcsp({
+              certificateDer: prepared.der,
+              issuerDer: prepared.issuerDer!,
+              source: url,
+              certificateIndex,
+              checkDateMs,
+              ocspRequestDer: prepared.ocspRequestDer!,
+              load: () =>
+                ocspLoader({
+                  url,
+                  certificate: Uint8Array.from(prepared.der),
+                  issuerCertificate: Uint8Array.from(prepared.issuerDer!)
+                })
+            })
+        });
       }
     }
     if (crlLoader) {
       for (const url of prepared.crlUrls) {
-        attempts.push(() =>
-          checker.checkCrl({
-            certificateDer: prepared.der,
-            issuerDer: prepared.issuerDer!,
-            source: url,
-            certificateIndex,
-            checkDateMs,
-            load: () => crlLoader(url)
-          })
-        );
+        attempts.push({
+          mechanism: "crl",
+          run: () =>
+            checker.checkCrl({
+              certificateDer: prepared.der,
+              issuerDer: prepared.issuerDer!,
+              source: url,
+              certificateIndex,
+              checkDateMs,
+              load: () => crlLoader(url)
+            })
+        });
       }
     }
 
@@ -136,8 +155,22 @@ export function createTrustValidator({
       "No usable CRL or OCSP source is configured for this certificate";
     for (const attempt of attempts) {
       try {
-        const result = await attempt();
-        if (result.status !== "unknown") return result;
+        const result = await attempt.run();
+        if (result.status !== "unknown") {
+          return {
+            status: result.status,
+            evidence: {
+              certificateIndex,
+              mechanism: attempt.mechanism,
+              status: result.status,
+              authenticated: true,
+              fresh: true,
+              thisUpdateMs: result.thisUpdate.getTime(),
+              nextUpdateMs: result.nextUpdate.getTime(),
+              checkedAtMs: result.checkedAt.getTime()
+            }
+          };
+        }
         message = result.message;
       } catch {
         message = "Unable to load or validate certificate revocation data";
@@ -168,6 +201,7 @@ export function createTrustValidator({
       }
 
       // The last path entry is the configured trust anchor.
+      const evidence: EvidenceSummary[] = [];
       for (let index = 0; index < path.certificates.length - 1; index++) {
         const revocation = await checkCertificateRevocation(
           path.certificates[index],
@@ -179,7 +213,8 @@ export function createTrustValidator({
             valid: false,
             code: "CERTIFICATE_REVOKED",
             message: "Certificate has been revoked",
-            certificateIndex: index
+            certificateIndex: index,
+            evidence: [revocation.evidence]
           };
         }
         if (revocation.status === "unknown") {
@@ -190,13 +225,15 @@ export function createTrustValidator({
             certificateIndex: index
           };
         }
+        evidence.push(revocation.evidence);
       }
 
       return {
         valid: true,
         certificatePath: path.certificatePath,
         trustAnchorFingerprint256: path.trustAnchorFingerprint256,
-        leafUriSubjectAlternativeNames: path.leafUriSubjectAlternativeNames
+        leafCertificate: path.leafCertificate,
+        evidence
       };
     }
   };

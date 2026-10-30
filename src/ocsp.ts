@@ -26,7 +26,12 @@ type OcspFailureCode =
   | "OCSP_STATUS_UNKNOWN";
 
 export type OcspValidationResult =
-  | { status: "good" | "revoked"; thisUpdate: Date; nextUpdate: Date }
+  | {
+      status: "good" | "revoked";
+      thisUpdate: Date;
+      nextUpdate: Date;
+      checkedAt: Date;
+    }
   | { status: "unknown"; code: OcspFailureCode; message: string };
 
 function unknownOcspStatus(
@@ -193,10 +198,10 @@ export async function validateOcsp({
   }
 
   if (single.certStatus.idBlock.tagNumber === OCSP_STATUS_GOOD) {
-    return { status: "good", thisUpdate, nextUpdate };
+    return { status: "good", thisUpdate, nextUpdate, checkedAt: checkDate };
   }
   if (single.certStatus.idBlock.tagNumber === OCSP_STATUS_REVOKED) {
-    return { status: "revoked", thisUpdate, nextUpdate };
+    return { status: "revoked", thisUpdate, nextUpdate, checkedAt: checkDate };
   }
   return unknownOcspStatus(
     "OCSP_STATUS_UNKNOWN",
