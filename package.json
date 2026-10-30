@@ -1,6 +1,6 @@
 {
   "name": "x509-trust",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "X.509 certificate chain and revocation validation for Node.js",
   "type": "module",
   "license": "UNLICENSED",
