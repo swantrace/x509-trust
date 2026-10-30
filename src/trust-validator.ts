@@ -118,7 +118,7 @@ export function createTrustValidator({
         valid: true,
         certificatePath: path.certificatePath,
         trustAnchorFingerprint256: path.trustAnchorFingerprint256,
-        leafUriSubjectAlternativeNames: path.leafUriSubjectAlternativeNames
+        leafCertificate: path.leafCertificate
       };
     }
   };

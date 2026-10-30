@@ -28,6 +28,15 @@ export declare function getUriSubjectAlternativeNames(
   input: Uint8Array
 ): Array<string>;
 
+export interface LeafCertificateInfo {
+  uriSubjectAlternativeNames: Array<string>;
+  publicKeySpkiDer: Uint8Array;
+  fingerprint256: string;
+  serialNumber: string;
+  notBeforeMs: number;
+  notAfterMs: number;
+}
+
 export interface NativeCrlResult {
   status: RevocationStatus;
   thisUpdateMs?: number;
@@ -58,7 +67,7 @@ export interface NativeValidatedPath {
   certificatePath: Array<Uint8Array>;
   trustAnchorIndex: number;
   trustAnchorFingerprint256: string;
-  leafUriSubjectAlternativeNames: Array<string>;
+  leafCertificate: LeafCertificateInfo;
   revocationTargets: Array<NativeRevocationTarget>;
 }
 

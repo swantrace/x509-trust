@@ -37,8 +37,10 @@ sequenceDiagram
 1. `certificates.ts` converts string inputs to UTF-8 bytes. The path worker
    snapshots every input, decodes all candidates, builds the trusted path and
    validates its signatures, dates and constraints.
-2. The same worker extracts leaf URI SANs, CRL/OCSP URLs and an OCSP request for
-   each non-anchor certificate. No separate metadata calls are needed.
+2. The same worker extracts leaf URI SANs, public key SPKI DER, SHA-256
+   fingerprint, serial number and validity timestamps, plus CRL/OCSP URLs and an
+   OCSP request for each non-anchor certificate. No separate metadata calls are
+   needed. Leaf metadata is exposed by the public API only on successful verification.
 3. TypeScript starts one source pipeline per non-anchor certificate. Pipelines
    run concurrently; sources within one certificate remain ordered OCSP first,
    then CRL.
@@ -93,3 +95,19 @@ Standalone URI extraction uses one synchronous
 `getUriSubjectAlternativeNames` call for PEM or DER. CPU-heavy path and evidence
 validation run in libuv's worker pool; HTTP, cache I/O and user callbacks remain
 in TypeScript.
+
+The Rust source is organized by responsibility:
+
+| Module under `native/src/` | Responsibility |
+| --- | --- |
+| `lib.rs` | Certificate decoding, metadata exports and shared status types. |
+| `certificate_path.rs` | Path validation and revocation target preparation. |
+| `leaf_certificate.rs` | Leaf metadata extraction, generated result type and certificate fingerprints. |
+| `names.rs` | Shared distinguished-name matching and its unit tests. |
+| `crl.rs` | CRL result types and native worker bindings. |
+| `crl/validation.rs` | CRL authorization, extensions, dates, signatures and status. |
+| `ocsp.rs` | OCSP result types and native worker bindings. |
+| `ocsp/request.rs` | OCSP request DER encoding. |
+| `ocsp/identity.rs` | CertID hashes and direct-issuer responder matching. |
+| `ocsp/signature.rs` | Supported signature parameters, including RSA-PSS. |
+| `ocsp/response.rs` | Response decoding, freshness, authentication and status. |

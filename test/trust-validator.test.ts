@@ -56,9 +56,17 @@ test("public API validates a full path using CRLs for leaf and intermediate", as
     certificateChain: [leaf, intermediate]
   });
   assert.equal(result.valid, true);
-  assert.deepEqual(result.leafUriSubjectAlternativeNames, [
-    "https://client.example.org/app"
-  ]);
+  const leafCertificate = new X509Certificate(leaf);
+  assert.deepEqual(result.leafCertificate, {
+    uriSubjectAlternativeNames: ["https://client.example.org/app"],
+    publicKeySpkiDer: new Uint8Array(
+      leafCertificate.publicKey.export({ format: "der", type: "spki" })
+    ),
+    fingerprint256: leafCertificate.fingerprint256,
+    serialNumber: leafCertificate.serialNumber,
+    notBeforeMs: Date.parse(leafCertificate.validFrom),
+    notAfterMs: Date.parse(leafCertificate.validTo)
+  });
   assert.equal(
     result.trustAnchorFingerprint256,
     new X509Certificate(root).fingerprint256
@@ -135,6 +143,7 @@ test("returns revoked without waiting for another certificate's request", async 
   assert.equal(result.valid, false);
   assert.equal(result.code, "CERTIFICATE_REVOKED");
   assert.equal(result.certificateIndex, 0);
+  assert.equal("leafCertificate" in result, false);
   assert.equal(loads, 2);
   assert.equal(aborted, true);
 });

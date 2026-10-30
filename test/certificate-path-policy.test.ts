@@ -150,6 +150,49 @@ test("native certificate path policy with independently signed certificates", as
         intermediate.der,
         root.der
       ]);
+      const expected = new X509Certificate(leaf.der);
+      const info = result.leafCertificate;
+      assert.deepEqual(info.uriSubjectAlternativeNames, ["urn:example:client"]);
+      assert.equal(info.fingerprint256, expected.fingerprint256);
+      assert.equal(info.serialNumber, expected.serialNumber);
+      assert.equal(info.notBeforeMs, Date.parse(expected.validFrom));
+      assert.equal(info.notAfterMs, Date.parse(expected.validTo));
+      const publicKey = await crypto.subtle.importKey(
+        "spki",
+        Uint8Array.from(info.publicKeySpkiDer),
+        { name: "ECDSA", namedCurve: "P-256" },
+        false,
+        ["verify"]
+      );
+      const data = new TextEncoder().encode("UDAP signing key");
+      const algorithm = { name: "ECDSA", hash: "SHA-256" };
+      const signature = await crypto.subtle.sign(algorithm, leaf.key, data);
+      assert.equal(
+        await crypto.subtle.verify(algorithm, publicKey, signature, data),
+        true
+      );
+    }
+  );
+
+  await t.test(
+    "leaf metadata omits serial sign padding and handles absent SAN",
+    async () => {
+      const changed = await reissue(leaf, intermediate, (certificate) => {
+        certificate.serialNumber = new Integer({
+          valueHex: Uint8Array.of(0x00, 0x80, 0xff).buffer
+        });
+        certificate.extensions = certificate.extensions!.filter(
+          (entry) => entry.extnID !== "2.5.29.17"
+        );
+      });
+      const result = await verify([changed.der, intermediate.der]);
+      assert.ok(result.pathValid);
+      assert.equal(result.leafCertificate.serialNumber, "80FF");
+      assert.deepEqual(result.leafCertificate.uriSubjectAlternativeNames, []);
+      assert.equal(
+        result.leafCertificate.fingerprint256,
+        new X509Certificate(changed.der).fingerprint256
+      );
     }
   );
 

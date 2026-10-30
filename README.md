@@ -164,7 +164,7 @@ type ValidationResult =
       valid: true;
       certificatePath: Uint8Array[];
       trustAnchorFingerprint256: string;
-      leafUriSubjectAlternativeNames: string[];
+      leafCertificate: LeafCertificateInfo;
     }
   | {
       valid: false;
@@ -172,6 +172,16 @@ type ValidationResult =
       message: string;
       certificateIndex?: number;
     };
+
+// Generated from the Rust native type; exported by x509-trust.
+interface LeafCertificateInfo {
+  uriSubjectAlternativeNames: string[];
+  publicKeySpkiDer: Uint8Array;
+  fingerprint256: string;
+  serialNumber: string;
+  notBeforeMs: number;
+  notAfterMs: number;
+}
 ```
 
 On success, `certificatePath` contains the validated path as DER bytes, leaf
@@ -179,12 +189,26 @@ first and including the selected trust anchor. `trustAnchorFingerprint256` is
 that anchor's SHA-256 fingerprint. These fields let applications inspect the
 selected path or record which anchor established trust.
 
-`leafUriSubjectAlternativeNames` contains the leaf certificate's URI SAN entries,
+`leafCertificate.uriSubjectAlternativeNames` contains the leaf certificate's URI SAN entries,
 in their original order and without normalization. It is empty when the leaf has
 no URI SANs. Applications can use these values for protocol-specific issuer
 matching without parsing the certificate again. This field is returned only
 after path and revocation validation succeed; the library does not perform JWT
 issuer matching.
+
+`leafCertificate` provides metadata for the validated leaf, extracted in the
+existing Rust path worker and returned only after path and revocation checks
+succeed. `publicKeySpkiDer` is the complete DER SubjectPublicKeyInfo,
+suitable for importing a JWT verification key; JWT verification and algorithm
+allowlists remain the application's responsibility.
+
+`fingerprint256` is the SHA-256 certificate fingerprint as uppercase hex bytes
+separated by colons. `serialNumber` is uppercase hexadecimal without separators
+or DER INTEGER sign padding, with two digits per byte. Validity bounds are Unix
+epoch milliseconds; use `new Date(value)` when a JavaScript `Date` is needed.
+Applications migrating stored Node `X509Certificate.fingerprint` values must
+recompute them from the stored certificate: that older property uses SHA-1,
+whereas this field uses SHA-256.
 
 | Failure code                  | Meaning                                                                               |
 | ----------------------------- | ------------------------------------------------------------------------------------- |

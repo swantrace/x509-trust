@@ -13,6 +13,9 @@ mod certificate_path;
 #[cfg_attr(test, allow(dead_code))]
 mod crl;
 #[cfg_attr(test, allow(dead_code))]
+mod leaf_certificate;
+mod names;
+#[cfg_attr(test, allow(dead_code))]
 mod ocsp;
 
 #[napi(string_enum = "lowercase")]

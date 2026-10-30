@@ -10,8 +10,9 @@ use x509_parser::oid_registry::{
 };
 
 use crate::{
-    decode_certificate, get_revocation_endpoints, get_uri_subject_alternative_names, ocsp,
-    parse_certificate,
+    decode_certificate, get_revocation_endpoints,
+    leaf_certificate::{fingerprint256, LeafCertificate, LeafCertificateInfo},
+    ocsp, parse_certificate,
 };
 
 // This API validates trust without imposing an application-specific EKU.
@@ -84,7 +85,7 @@ pub struct NativeValidatedPath {
     pub certificate_path: Vec<Uint8Array>,
     pub trust_anchor_index: u32,
     pub trust_anchor_fingerprint256: String,
-    pub leaf_uri_subject_alternative_names: Vec<String>,
+    pub leaf_certificate: LeafCertificateInfo,
     pub revocation_targets: Vec<NativeRevocationTarget>,
 }
 
@@ -107,7 +108,7 @@ pub struct ValidatedPath {
     certificates: Vec<Vec<u8>>,
     anchor_index: u32,
     anchor_fingerprint256: String,
-    leaf_uris: Vec<String>,
+    leaf_certificate: LeafCertificate,
     targets: Vec<RevocationTarget>,
 }
 
@@ -199,7 +200,7 @@ impl Task for ValidatePathTask {
                 .map(|cert| cert.der().as_ref().to_vec()),
         );
         certificates.push(self.anchors[anchor_index].clone());
-        let leaf_uris = get_uri_subject_alternative_names(&certificates[0])?;
+        let leaf_certificate = LeafCertificate::from_der(&certificates[0])?;
         let targets = certificates
             .windows(2)
             .enumerate()
@@ -221,18 +222,10 @@ impl Task for ValidatePathTask {
             .collect::<Result<_>>()?;
         Ok(ValidatedPath {
             certificates,
-            leaf_uris,
+            leaf_certificate,
             targets,
             anchor_index: anchor_index as u32,
-            anchor_fingerprint256: ring::digest::digest(
-                &ring::digest::SHA256,
-                &self.anchors[anchor_index],
-            )
-            .as_ref()
-            .iter()
-            .map(|byte| format!("{byte:02X}"))
-            .collect::<Vec<_>>()
-            .join(":"),
+            anchor_fingerprint256: fingerprint256(&self.anchors[anchor_index]),
         })
     }
 
@@ -245,7 +238,7 @@ impl Task for ValidatePathTask {
                 .collect(),
             trust_anchor_index: output.anchor_index,
             trust_anchor_fingerprint256: output.anchor_fingerprint256,
-            leaf_uri_subject_alternative_names: output.leaf_uris,
+            leaf_certificate: output.leaf_certificate.into(),
             revocation_targets: output
                 .targets
                 .into_iter()

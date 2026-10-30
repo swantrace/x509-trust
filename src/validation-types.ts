@@ -1,3 +1,4 @@
+import type { LeafCertificateInfo } from "../native/index.js";
 import type { CacheStore } from "./cache.ts";
 import type { CertificateInput } from "./certificates.ts";
 import type { DiagnosticCallback } from "./diagnostics.ts";
@@ -6,6 +7,8 @@ import type {
   HttpOptions,
   OcspLoadOptions
 } from "./http-loaders.ts";
+
+export type { LeafCertificateInfo } from "../native/index.js";
 
 export interface TrustValidatorOptions {
   trustAnchors: readonly CertificateInput[];
@@ -37,7 +40,7 @@ export type ValidationResult =
       valid: true;
       certificatePath: Uint8Array[];
       trustAnchorFingerprint256: string;
-      leafUriSubjectAlternativeNames: string[];
+      leafCertificate: LeafCertificateInfo;
     }
   | {
       valid: false;

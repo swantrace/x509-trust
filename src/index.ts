@@ -11,6 +11,7 @@ export type {
 } from "./http-loaders.ts";
 export { createTrustValidator } from "./trust-validator.ts";
 export type {
+  LeafCertificateInfo,
   TrustValidator,
   TrustValidatorOptions,
   ValidationFailureCode,
