@@ -12,6 +12,7 @@ import {
   validateCertificatePath
 } from "./certificate-path.ts";
 import { type CrlValidationResult, validateCrl } from "./crl.ts";
+import { type CrlIndexCache, createCrlIndexCache } from "./crl-index-cache.ts";
 import {
   type CertificateFacts,
   extractCertificateFacts,
@@ -89,7 +90,7 @@ export interface PkiEngine {
   }): Promise<OcspValidationResult>;
 }
 
-function snapshotBytes(
+function snapshotBinary(
   input: Uint8Array,
   label: string
 ): Uint8Array<ArrayBuffer> {
@@ -97,6 +98,14 @@ function snapshotBytes(
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_CERTIFICATE_DER_BYTES) {
     throw new TypeError(`${label} has an unsupported DER size`);
   }
+  return bytes;
+}
+
+function snapshotBytes(
+  input: Uint8Array,
+  label: string
+): Uint8Array<ArrayBuffer> {
+  const bytes = snapshotBinary(input, label);
   const parsed = fromBER(bytes);
   if (parsed.offset < 0 || parsed.offset !== bytes.byteLength) {
     throw new TypeError(`${label} must contain exactly one DER value`);
@@ -230,7 +239,13 @@ async function createOcspRequest(
   return new Uint8Array(request.toSchema(true).toBER(false));
 }
 
-export function createInlinePkiEngine(): PkiEngine {
+export interface InlinePkiEngineOptions {
+  crlIndexCache?: CrlIndexCache | false;
+}
+
+export function createInlinePkiEngine({
+  crlIndexCache = createCrlIndexCache()
+}: InlinePkiEngineOptions = {}): PkiEngine {
   return {
     async preparePath({ certificateChain, trustAnchors, checkDateMs, signal }) {
       signal?.throwIfAborted();
@@ -382,9 +397,12 @@ export function createInlinePkiEngine(): PkiEngine {
         return await validateCrl({
           certificate,
           issuerCertificate,
-          crl: snapshotBytes(crl, "CRL"),
+          // Exact-DER validation happens inside validateCrl on a cache miss.
+          // On a parsed-index hit the same bytes were already checked.
+          crl: snapshotBinary(crl, "CRL"),
           checkDate:
-            checkDateMs === undefined ? undefined : new Date(checkDateMs)
+            checkDateMs === undefined ? undefined : new Date(checkDateMs),
+          indexCache: crlIndexCache || undefined
         });
       } catch {
         return {

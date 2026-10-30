@@ -1,6 +1,7 @@
 import { X509Certificate } from "node:crypto";
 import type { CacheStore } from "./cache.ts";
 import type { CertificateInput } from "./certificate-path.ts";
+import type { CrlIndexCacheOptions } from "./crl-index-cache.ts";
 import type { DiagnosticCallback } from "./diagnostics.ts";
 import { invalidPolicy } from "./errors.ts";
 import type { EvidenceProvider } from "./evidence-provider.ts";
@@ -35,6 +36,7 @@ export interface TrustRegistryOptions {
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
   provider?: EvidenceProvider;
   engine?: PkiEngine;
+  crlIndexCache?: CrlIndexCacheOptions | false;
   http?: HttpOptions;
   deadlineMs?: number;
   cache?: CacheStore;

@@ -53,6 +53,7 @@ interface TrustValidatorOptions {
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
   provider?: EvidenceProvider;
   engine?: PkiEngine;
+  crlIndexCache?: CrlIndexCacheOptions | false;
   http?: HttpOptions;
   deadlineMs?: number;
   cache?: CacheStore;
@@ -60,6 +61,11 @@ interface TrustValidatorOptions {
   cacheKeyPrefix?: string;
   now?: () => number;
   onDiagnostic?: DiagnosticCallback;
+}
+
+interface CrlIndexCacheOptions {
+  maxEntries?: number;
+  maxBytes?: number;
 }
 
 interface CrlLoadOptions {
@@ -531,6 +537,7 @@ await engine.close({ force: true });
 | `maxQueue`      | `maxThreads * 4` | Maximum tasks waiting for a worker. |
 | `idleTimeout`   | `30000` | Idle worker shutdown delay. |
 | `taskTimeoutMs` | `10000` | Per-task deadline; expiry aborts that worker task. |
+| `crlIndexCache` | enabled, 8 entries / 64 MiB | Worker-local parsed CRL index cache; `false` disables it. |
 | `filename`      | packaged worker | Override only when embedding the worker file yourself. |
 
 Only DER bytes and JSON-compatible DTOs cross the thread boundary. HTTP,
@@ -550,6 +557,49 @@ the local inline/worker comparison: the worker path clearly reduces main-thread
 event-loop delay for CPU-heavy path work, while small CRL/OCSP tasks can be
 slightly slower because of task dispatch overhead. Choose it from measurements
 on the target deployment, not from a blanket default.
+
+## Parsed CRL index cache
+
+In addition to the raw DER cache, the inline engine keeps a bounded parsed CRL
+index cache by default. It stores the parsed CRL object, a serial-number `Set`,
+and the unsupported-extension result, keyed by SHA-256 of the CRL DER.
+
+This cache is only an acceleration structure:
+
+- Every use still checks issuer, `thisUpdate`/`nextUpdate`, signature, and
+  certificate applicability.
+- The per-certificate `good`/`revoked` result is computed from the cached serial
+  set; it is never stored as a certificate status conclusion.
+- A changed CRL DER has a different key and is parsed separately.
+- Entries are bounded by both count and approximate bytes (defaults: 8 entries,
+  64 MiB) with LRU eviction; there is no independent trust TTL.
+- The raw DER cache remains the source for reauthentication and auditing.
+
+The cache is enabled by default for inline validators and for each worker-local
+engine. Disable or size it per validator/registry/worker engine:
+
+```typescript
+createTrustValidator({
+  trustAnchors: [rootCertificate],
+  provider,
+  crlIndexCache: { maxEntries: 16, maxBytes: 128 * 1024 * 1024 }
+});
+// or
+createTrustValidator({ trustAnchors: [rootCertificate], crlIndexCache: false });
+```
+
+Worker caches are per worker thread and are not shared between workers; the raw
+DER cache and HTTP single-flight remain on the main thread. The benchmark in
+[docs/benchmark.md](docs/benchmark.md) separates isolated CRL validation from
+full path plus evidence validation, because path validation can dominate the
+full-validator totals.
+
+In the latest local run, isolated validation of a 3,000-entry CRL improved from
+about 390 ms p50 without the index to about 2.3 ms p50 with it. Worker mode
+measured about 395 ms without the index and 8.7 ms with it; it kept event-loop
+p99 near 2 ms while inline indexed validation stayed tens of milliseconds. The
+index cache is therefore the first optimization for large repeated CRLs; worker
+mode remains a responsiveness tradeoff, not a throughput default.
 
 ## Concurrency, early rejection, and cancellation
 

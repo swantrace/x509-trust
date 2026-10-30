@@ -1,6 +1,7 @@
 export { type CacheStore, createMemoryCache } from "./cache.ts";
 export { getUriSubjectAlternativeNames } from "./certificate-names.ts";
 export type { CertificateInput } from "./certificate-path.ts";
+export type { CrlIndexCacheOptions } from "./crl-index-cache.ts";
 export type { DiagnosticCallback, DiagnosticEvent } from "./diagnostics.ts";
 export {
   PolicyError,

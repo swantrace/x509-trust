@@ -2,6 +2,7 @@ import { X509Certificate } from "node:crypto";
 import { availableParallelism } from "node:os";
 import { Piscina } from "piscina";
 import type { CrlValidationResult } from "./crl.ts";
+import type { CrlIndexCacheOptions } from "./crl-index-cache.ts";
 import { ResourceLimitError } from "./errors.ts";
 import type { OcspValidationResult } from "./ocsp.ts";
 import type { PkiEngine, PreparedPathResult } from "./pki-engine.ts";
@@ -14,6 +15,7 @@ export interface PkiWorkerEngineOptions {
   maxQueue?: number;
   idleTimeout?: number;
   taskTimeoutMs?: number;
+  crlIndexCache?: CrlIndexCacheOptions | false;
 }
 
 export interface PkiWorkerStats {
@@ -74,7 +76,10 @@ export function createWorkerPkiEngine(
     maxThreads,
     maxQueue,
     idleTimeout,
-    closeTimeout: 5000
+    closeTimeout: 5000,
+    workerData: {
+      crlIndexCache: options.crlIndexCache ?? {}
+    }
   });
 
   async function runTask<T extends PkiWorkerResult>(

@@ -1,7 +1,18 @@
+import { workerData } from "node:worker_threads";
+import {
+  type CrlIndexCacheOptions,
+  createCrlIndexCache
+} from "./crl-index-cache.ts";
 import { createInlinePkiEngine } from "./pki-engine.ts";
 import type { PkiWorkerResult, PkiWorkerTask } from "./pki-worker-protocol.ts";
 
-const engine = createInlinePkiEngine();
+const cacheOptions = (
+  workerData as { crlIndexCache?: CrlIndexCacheOptions | false } | undefined
+)?.crlIndexCache;
+const engine = createInlinePkiEngine({
+  crlIndexCache:
+    cacheOptions === false ? false : createCrlIndexCache(cacheOptions)
+});
 
 export default async function runPkiTask(
   task: PkiWorkerTask

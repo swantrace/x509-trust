@@ -3,6 +3,9 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { cpus, platform, release, totalmem } from "node:os";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
+import { Certificate } from "pkijs";
+import { validateCrl } from "../src/crl.ts";
+import { createCrlIndexCache } from "../src/crl-index-cache.ts";
 import {
   createEvidenceProvider,
   createTrustValidator,
@@ -21,7 +24,8 @@ import {
   createSyntheticChain
 } from "../test/helpers/synthetic-pki.ts";
 
-const now = () => new Date("2026-10-15T00:00:00Z").getTime();
+const checkDate = new Date("2026-10-15T00:00:00Z");
+const now = () => checkDate.getTime();
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface ServerState {
@@ -485,28 +489,89 @@ results.push(
 
 await resetServer();
 server.state.leafCrl = largeLeafCrl;
-const largeValidator = makeValidator(crlPolicy());
+const largeInlineNoIndex = createTrustValidator({
+  trustAnchors: [mainChain.root.der],
+  policy: crlPolicy(),
+  provider,
+  crlIndexCache: false,
+  now,
+  deadlineMs: 10_000
+});
 results.push(
   await runScenario({
-    name: "large-crl-warm",
+    name: "large-crl-inline-no-index",
     description:
-      "Cached CRL with 3000 revoked entries revalidated per request.",
-    iterations: 25,
+      "Inline, raw DER cache only; 3000-entry CRL reparsed and scanned per request.",
+    iterations: 20,
     warmup: 2,
     provider,
-    run: () => largeValidator.verify({ certificateChain: chainInput }),
+    run: () => largeInlineNoIndex.verify({ certificateChain: chainInput }),
     expect: expectValid
   })
 );
 
 await resetServer();
 server.state.leafCrl = largeLeafCrl;
+const largeInlineIndex = createTrustValidator({
+  trustAnchors: [mainChain.root.der],
+  policy: crlPolicy(),
+  provider,
+  crlIndexCache: { maxEntries: 8, maxBytes: 64 * 1024 * 1024 },
+  now,
+  deadlineMs: 10_000
+});
+results.push(
+  await runScenario({
+    name: "large-crl-inline-index",
+    description:
+      "Inline parsed CRL index cache; 3000-entry CRL parses once, then O(1) serial lookup.",
+    iterations: 20,
+    warmup: 2,
+    provider,
+    run: () => largeInlineIndex.verify({ certificateChain: chainInput }),
+    expect: expectValid
+  })
+);
+
+await resetServer();
+server.state.leafCrl = largeLeafCrl;
+const workerNoIndexEngine = createWorkerPkiEngine({
+  maxThreads: 2,
+  maxQueue: 16,
+  taskTimeoutMs: 5000,
+  crlIndexCache: false
+});
+const largeWorkerNoIndex = createTrustValidator({
+  trustAnchors: [mainChain.root.der],
+  policy: crlPolicy(),
+  provider,
+  engine: workerNoIndexEngine,
+  now,
+  deadlineMs: 10_000
+});
+results.push(
+  await runScenario({
+    name: "large-crl-worker-no-index",
+    description:
+      "Worker pool, raw DER cache only; no parsed CRL index in workers.",
+    iterations: 20,
+    warmup: 2,
+    provider,
+    run: () => largeWorkerNoIndex.verify({ certificateChain: chainInput }),
+    expect: expectValid
+  })
+);
+await workerNoIndexEngine.close({ force: true });
+
+await resetServer();
+server.state.leafCrl = largeLeafCrl;
 const workerEngine = createWorkerPkiEngine({
   maxThreads: 2,
   maxQueue: 16,
-  taskTimeoutMs: 5000
+  taskTimeoutMs: 5000,
+  crlIndexCache: { maxEntries: 8, maxBytes: 64 * 1024 * 1024 }
 });
-const workerLargeValidator = createTrustValidator({
+const largeWorkerIndex = createTrustValidator({
   trustAnchors: [mainChain.root.der],
   policy: crlPolicy(),
   provider,
@@ -516,16 +581,116 @@ const workerLargeValidator = createTrustValidator({
 });
 results.push(
   await runScenario({
-    name: "large-crl-warm-worker",
+    name: "large-crl-worker-index",
     description:
-      "Same cached 3000-entry CRL revalidation executed in a bounded worker pool.",
-    iterations: 25,
+      "Worker pool with a bounded parsed CRL index cache inside each worker.",
+    iterations: 20,
     warmup: 2,
     provider,
-    run: () => workerLargeValidator.verify({ certificateChain: chainInput }),
+    run: () => largeWorkerIndex.verify({ certificateChain: chainInput }),
     expect: expectValid
   })
 );
+
+const directCertificate = Certificate.fromBER(mainChain.leaf.der);
+const directIssuer = Certificate.fromBER(mainChain.intermediate.der);
+const inlineIndexCache = createCrlIndexCache({
+  maxEntries: 8,
+  maxBytes: 64 * 1024 * 1024
+});
+const microWorkerNoIndex = createWorkerPkiEngine({
+  maxThreads: 1,
+  maxQueue: 8,
+  taskTimeoutMs: 5000,
+  crlIndexCache: false
+});
+const microWorkerIndex = createWorkerPkiEngine({
+  maxThreads: 1,
+  maxQueue: 8,
+  taskTimeoutMs: 5000,
+  crlIndexCache: { maxEntries: 8, maxBytes: 64 * 1024 * 1024 }
+});
+const expectCrlGood = (result: unknown) => {
+  const status = result as { status?: string; code?: string };
+  if (status.status !== "good") {
+    throw new Error(
+      `Expected good CRL status, got ${status.code ?? status.status}`
+    );
+  }
+};
+
+results.push(
+  await runScenario({
+    name: "crl-validate-inline-no-index",
+    description:
+      "Isolated inline validateCrl: parse 3000-entry CRL and scan serials every call.",
+    iterations: 15,
+    warmup: 2,
+    run: () =>
+      validateCrl({
+        certificate: directCertificate,
+        issuerCertificate: directIssuer,
+        crl: largeLeafCrl,
+        checkDate
+      }),
+    expect: expectCrlGood
+  })
+);
+results.push(
+  await runScenario({
+    name: "crl-validate-inline-index",
+    description:
+      "Isolated inline validateCrl with parsed CRL index cache; rechecks time and signature.",
+    iterations: 30,
+    warmup: 2,
+    run: () =>
+      validateCrl({
+        certificate: directCertificate,
+        issuerCertificate: directIssuer,
+        crl: largeLeafCrl,
+        checkDate,
+        indexCache: inlineIndexCache
+      }),
+    expect: expectCrlGood
+  })
+);
+results.push(
+  await runScenario({
+    name: "crl-validate-worker-no-index",
+    description:
+      "Isolated worker validateCrl without parsed CRL cache; one worker thread.",
+    iterations: 15,
+    warmup: 2,
+    run: () =>
+      microWorkerNoIndex.validateCrl({
+        certificateDer: mainChain.leaf.der,
+        issuerDer: mainChain.intermediate.der,
+        crl: largeLeafCrl,
+        checkDateMs: now()
+      }),
+    expect: expectCrlGood
+  })
+);
+results.push(
+  await runScenario({
+    name: "crl-validate-worker-index",
+    description:
+      "Isolated worker validateCrl with worker-local parsed CRL index cache.",
+    iterations: 30,
+    warmup: 2,
+    run: () =>
+      microWorkerIndex.validateCrl({
+        certificateDer: mainChain.leaf.der,
+        issuerDer: mainChain.intermediate.der,
+        crl: largeLeafCrl,
+        checkDateMs: now()
+      }),
+    expect: expectCrlGood
+  })
+);
+await microWorkerNoIndex.close({ force: true });
+await microWorkerIndex.close({ force: true });
+console.log("inline CRL index cache stats:", inlineIndexCache.stats());
 
 const cpuEngine = createInlinePkiEngine();
 const deepInput = [
@@ -610,12 +775,14 @@ ${results
 
 ${results.map((result) => `- **${result.name}**: ${result.description} Requests by path: ${result.requestsByPath.map(([path, count]) => `${path}=${count}`).join(", ") || "none"}.`).join("\n")}
 
-## Interpretation and Step 9 input
+## Interpretation
 
-- Network scenarios are dominated by local HTTP round trips and evidence parsing; the \`warm-cache\` and \`large-crl-warm\` scenarios isolate evidence revalidation without downloads.
-- \`cpu-path-5-cert\` isolates path-building CPU without any network or revocation evidence.
-- The \`large-crl-warm-worker\` and \`cpu-path-5-cert-worker\` scenarios run the same CPU work through the optional Piscina pool. Compare their latency and event-loop delay with the inline scenarios; the worker pool is optional and remains off unless the host creates and shares one.
-- The inline large-CRL and CPU-path event-loop p99 values above are the evidence for keeping the worker mode available. The measurement is a baseline, not a pass/fail gate; rerunning on the target deployment is still required before defaulting worker execution.
+- Network scenarios are dominated by local HTTP round trips and evidence parsing; warm-cache scenarios isolate evidence revalidation without downloads.
+- The four \`crl-validate-*\` scenarios isolate CRL validation itself: the 3000-entry CRL is parsed and scanned with no index, then reused through the parsed CRL index cache. The index cache still rechecks issuer, time, and signature on every call; it only avoids repeated ASN.1 parsing and linear serial scans.
+- The four \`large-crl-*\` scenarios exercise the same comparison through the full validator and raw-DER cache; they include cache serialization, path setup, and policy overhead. Their totals are dominated by path validation, so use the isolated \`crl-validate-*\` rows to judge the index cache itself.
+- \`cpu-path-5-cert\` isolates path-building CPU; the worker variants show the main-thread event-loop benefit of Piscina dispatch.
+- Worker dispatch adds latency for small indexed CRL validations, but it keeps the main thread responsive when parsing or path work is the bottleneck. In the latest run, the parsed index removed most CRL parse/scan cost inline; the worker index cache was slower than inline index cache but had lower event-loop delay.
+- The worker pool is optional and remains off unless the host creates and shares one. The measurement is a baseline, not a pass/fail gate; rerunning on the target deployment is required before changing defaults.
 - Network concurrency, bounded queues, single-flight, and cancellation remain on the main thread; workers receive only DER/DTO. The pool is owned by the caller and must be closed.
 `;
 
