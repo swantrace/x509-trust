@@ -4,7 +4,7 @@ import {
   createEvidenceProvider,
   createTrustValidator,
   ResourceLimitError,
-  type TrustPolicyInput
+  type ValidationProfileInput
 } from "../src/index.ts";
 import {
   createCrl,
@@ -332,7 +332,7 @@ test("verification deadline returns RESOURCE_LIMIT_EXCEEDED", async () => {
     loadOcsp: false,
     loadCrl: async () => release.promise
   });
-  const policy: TrustPolicyInput = {
+  const policy: ValidationProfileInput = {
     id: "deadline:policy",
     version: 1,
     source: "deadline test",
@@ -341,7 +341,7 @@ test("verification deadline returns RESOURCE_LIMIT_EXCEEDED", async () => {
   };
   const validator = createTrustValidator({
     trustAnchors: [chain.root.der],
-    policy,
+    profile: policy,
     provider,
     deadlineMs: 25
   });
@@ -374,7 +374,7 @@ test("validator maps a provider queue limit to RESOURCE_LIMIT_EXCEEDED", async (
       return release.promise;
     }
   });
-  const policy: TrustPolicyInput = {
+  const policy: ValidationProfileInput = {
     id: "queue:policy",
     version: 1,
     source: "queue test",
@@ -384,7 +384,7 @@ test("validator maps a provider queue limit to RESOURCE_LIMIT_EXCEEDED", async (
   const makeValidator = (chain: typeof chainA) =>
     createTrustValidator({
       trustAnchors: [chain.root.der],
-      policy,
+      profile: policy,
       provider,
       deadlineMs: 5000
     });
@@ -416,7 +416,7 @@ test("shared CRL bytes still yield per-certificate status", async () => {
     loadCrl: async (url) =>
       url.endsWith("/intermediate.crl") ? intermediateCrl : leafCrl
   });
-  const policy: TrustPolicyInput = {
+  const policy: ValidationProfileInput = {
     id: "status:policy",
     version: 1,
     source: "status test",
@@ -426,7 +426,7 @@ test("shared CRL bytes still yield per-certificate status", async () => {
   const makeValidator = () =>
     createTrustValidator({
       trustAnchors: [chain.root.der],
-      policy,
+      profile: policy,
       provider,
       now: () => new Date("2026-10-15T00:00:00Z").getTime()
     });

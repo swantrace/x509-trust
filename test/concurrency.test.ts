@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { CacheStore } from "../src/evidence/cache.ts";
-import { createTrustValidator, type TrustPolicyInput } from "../src/index.ts";
+import {
+  createTrustValidator,
+  type ValidationProfileInput
+} from "../src/index.ts";
 import {
   createCrl,
   createOcspResponse,
@@ -53,7 +56,7 @@ const intermediateGoodOcsp = await createOcspResponse(
   "good"
 );
 
-function policy(sourceOrder: ("crl" | "ocsp")[]): TrustPolicyInput {
+function policy(sourceOrder: ("crl" | "ocsp")[]): ValidationProfileInput {
   return {
     id: "concurrency:policy",
     version: 1,
@@ -71,7 +74,7 @@ test("starts every non-anchor evidence pipeline before any of them completes", {
   const releases = new Map<string, () => void>();
   const validator = createTrustValidator({
     trustAnchors: [crlChain.root.der],
-    policy: policy(["crl"]),
+    profile: policy(["crl"]),
     now,
     loadOcsp: false,
     loadCrl: async (url) => {
@@ -107,7 +110,7 @@ test("a stalled other certificate does not delay a confirmed revoked result", {
   const releaseIntermediate = deferred<Uint8Array>();
   const validator = createTrustValidator({
     trustAnchors: [ocspChain.root.der],
-    policy: policy(["ocsp", "crl"]),
+    profile: policy(["ocsp", "crl"]),
     now,
     loadCrl: false,
     loadOcsp: async ({ url, signal }) => {
@@ -143,7 +146,7 @@ test("falls back within one certificate while another certificate is still pendi
   const releaseIntermediate = deferred<Uint8Array>();
   const validator = createTrustValidator({
     trustAnchors: [crlChain.root.der],
-    policy: policy(["crl"]),
+    profile: policy(["crl"]),
     now,
     loadOcsp: false,
     loadCrl: async (url) => {
@@ -171,7 +174,7 @@ test("external abort reaches willing loaders and rejects with AbortError", {
   const observedAbort = deferred();
   const validator = createTrustValidator({
     trustAnchors: [crlChain.root.der],
-    policy: policy(["crl"]),
+    profile: policy(["crl"]),
     now,
     loadOcsp: false,
     loadCrl: (_url, options) =>
@@ -224,7 +227,7 @@ test("a slow cache write does not delay an authenticated revoked result", {
   };
   const validator = createTrustValidator({
     trustAnchors: [ocspChain.root.der],
-    policy: policy(["ocsp"]),
+    profile: policy(["ocsp"]),
     now,
     cache,
     loadCrl: false,
@@ -241,7 +244,7 @@ test("a slow cache write does not delay an authenticated revoked result", {
 test("an explicit checkDate is copied before asynchronous validation", async () => {
   const validator = createTrustValidator({
     trustAnchors: [crlChain.root.der],
-    policy: policy(["crl"]),
+    profile: policy(["crl"]),
     now,
     loadOcsp: false,
     loadCrl: async (url) =>

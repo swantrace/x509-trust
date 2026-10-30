@@ -8,7 +8,10 @@ import {
   crlDerHash
 } from "../src/engine/crl-index-cache.ts";
 import { createInlinePkiEngine } from "../src/engine/pki-engine.ts";
-import { createTrustValidator, type TrustPolicyInput } from "../src/index.ts";
+import {
+  createTrustValidator,
+  type ValidationProfileInput
+} from "../src/index.ts";
 import {
   createCrl,
   createLeafForChain,
@@ -155,7 +158,7 @@ test("validates CRL index cache options and validator wiring", async () => {
   assert.throws(() => createCrlIndexCache({ maxEntries: 0 }), TypeError);
   assert.throws(() => createCrlIndexCache({ maxBytes: 0 }), TypeError);
   const chain = await createSyntheticChain({});
-  const policy: TrustPolicyInput = {
+  const policy: ValidationProfileInput = {
     id: "index:policy",
     version: 1,
     source: "index test",
@@ -166,7 +169,7 @@ test("validates CRL index cache options and validator wiring", async () => {
     () =>
       createTrustValidator({
         trustAnchors: [chain.root.der],
-        policy,
+        profile: policy,
         crlIndexCache: { maxEntries: 0 }
       }),
     TypeError

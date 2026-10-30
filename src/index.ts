@@ -13,8 +13,8 @@ export type {
   PreparedPathResult
 } from "./engine/pki-engine.ts";
 export {
-  PolicyError,
-  type PolicyErrorCode,
+  ProfileError,
+  type ProfileErrorCode,
   ResourceLimitError
 } from "./errors.ts";
 export { type CacheStore, createMemoryCache } from "./evidence/cache.ts";
@@ -43,18 +43,25 @@ export {
   type RequestSchedulerStats
 } from "./evidence/request-scheduler.ts";
 export {
-  type CompiledTrustPolicy,
-  compileTrustPolicy,
-  DEFAULT_TRUST_POLICY,
-  POLICY_CAPABILITIES,
-  type PolicyCapability,
-  type PolicySource,
-  type PolicyVersion,
+  type CompiledValidationProfile,
+  compileValidationProfile,
+  DEFAULT_VALIDATION_PROFILE,
+  PROFILE_CAPABILITIES,
+  type ProfileCapability,
+  type ProfileSource,
+  type ProfileVersion,
+  profileCapabilities,
   type RequiredEvidence,
   type RevocationMechanism,
-  type TrustPolicyInput,
-  trustPolicyCapabilities
-} from "./policy/policy.ts";
+  type ValidationProfileInput
+} from "./profile/profile.ts";
+export {
+  createValidationProfileRegistry,
+  type ValidationProfileRegistration,
+  type ValidationProfileRegistry,
+  type ValidationProfileRegistryOptions,
+  type ValidationProfileRegistryVerifyOptions
+} from "./profile/registry.ts";
 export {
   type RuleLeafFacts,
   type RulePathFacts,
@@ -62,14 +69,7 @@ export {
   type TrustRuleContext,
   type TrustRuleRegistration,
   type TrustRuleResult
-} from "./policy/rules.ts";
-export {
-  createTrustRegistry,
-  type TrustCommunityRegistration,
-  type TrustRegistry,
-  type TrustRegistryOptions,
-  type TrustRegistryVerifyOptions
-} from "./policy/trust-registry.ts";
+} from "./profile/rules.ts";
 export {
   createTrustValidator,
   type TrustValidator,

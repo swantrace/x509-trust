@@ -3,8 +3,8 @@ import type {
   KeyUsageName,
   ValidatedLeafCertificate
 } from "../engine/leaf-certificate.ts";
-import { invalidPolicy, unsupportedPolicy } from "../errors.ts";
-import type { CompiledTrustPolicy } from "./policy.ts";
+import { invalidProfile, unsupportedProfile } from "../errors.ts";
+import type { CompiledValidationProfile } from "./profile.ts";
 
 export interface RuleLeafFacts {
   fingerprint256: string;
@@ -30,8 +30,8 @@ export interface RulePathFacts {
 }
 
 export interface TrustRuleContext {
-  readonly communityId?: string;
-  readonly policy: CompiledTrustPolicy;
+  readonly profileId?: string;
+  readonly profile: CompiledValidationProfile;
   readonly leaf: RuleLeafFacts;
   readonly certificatePath: readonly RulePathFacts[];
 }
@@ -85,28 +85,28 @@ export function normalizeRuleRegistrations(
 ): TrustRuleRegistration[] {
   if (input === undefined) return [];
   if (!Array.isArray(input)) {
-    throw invalidPolicy("rules must be an array");
+    throw invalidProfile("rules must be an array");
   }
   const names = new Set<string>();
   return input.map((entry, index) => {
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-      throw invalidPolicy(`rules[${index}] must be an object`);
+      throw invalidProfile(`rules[${index}] must be an object`);
     }
     for (const key of Object.keys(entry)) {
       if (!["name", "check"].includes(key)) {
-        throw invalidPolicy(`rules[${index}] contains unknown field "${key}"`);
+        throw invalidProfile(`rules[${index}] contains unknown field "${key}"`);
       }
     }
     const name = (entry as { name?: unknown }).name;
     const check = (entry as { check?: unknown }).check;
     if (typeof name !== "string" || name.trim() === "") {
-      throw invalidPolicy(`rules[${index}].name must be a non-empty string`);
+      throw invalidProfile(`rules[${index}].name must be a non-empty string`);
     }
     if (names.has(name)) {
-      throw invalidPolicy(`Duplicate registered rule name: ${name}`);
+      throw invalidProfile(`Duplicate registered rule name: ${name}`);
     }
     if (typeof check !== "function") {
-      throw invalidPolicy(`rules[${index}].check must be a function`);
+      throw invalidProfile(`rules[${index}].check must be a function`);
     }
     names.add(name);
     return { name, check: check as TrustRule };
@@ -128,19 +128,19 @@ function ruleResultMessage(name: string, result: unknown): string | undefined {
 }
 
 export async function applyTrustRules({
-  policy,
+  profile,
   leaf,
   certificatePath,
-  communityId,
+  profileId,
   rules
 }: {
-  policy: CompiledTrustPolicy;
+  profile: CompiledValidationProfile;
   leaf: ValidatedLeafCertificate;
   certificatePath: readonly CertificateFacts[];
-  communityId?: string;
+  profileId?: string;
   rules: readonly TrustRuleRegistration[];
 }): Promise<string | undefined> {
-  const required = policy.rules;
+  const required = profile.rules;
   if (!required) return undefined;
 
   if (
@@ -166,8 +166,8 @@ export async function applyTrustRules({
     return "The leaf certificate does not contain every required extended key usage OID";
   }
   if (
-    required.requiredLeafPolicyOids &&
-    !required.requiredLeafPolicyOids.every((oid) =>
+    required.requiredCertificatePolicyOids &&
+    !required.requiredCertificatePolicyOids.every((oid) =>
       (leaf.certificatePolicyOids ?? []).includes(oid)
     )
   ) {
@@ -175,8 +175,8 @@ export async function applyTrustRules({
   }
 
   const context: TrustRuleContext = Object.freeze({
-    communityId,
-    policy,
+    profileId,
+    profile,
     leaf: toRuleLeafFacts(leaf),
     certificatePath: Object.freeze(certificatePath.map(toRulePathFacts))
   });
@@ -184,7 +184,7 @@ export async function applyTrustRules({
   for (const name of required.requiredRuleNames ?? []) {
     const rule = byName.get(name);
     if (!rule) {
-      throw unsupportedPolicy(
+      throw unsupportedProfile(
         `No registered rule handler is available for "${name}"`
       );
     }

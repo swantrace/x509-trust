@@ -11,7 +11,7 @@ import {
   createEvidenceProvider,
   createTrustValidator,
   type EvidenceProvider,
-  type TrustPolicyInput,
+  type ValidationProfileInput,
   type ValidationResult
 } from "../src/index.ts";
 import { createWorkerPkiEngine } from "../src/worker.ts";
@@ -253,7 +253,7 @@ async function resetServer(): Promise<void> {
   await wait(10);
 }
 
-function ocspPolicy(): TrustPolicyInput {
+function ocspPolicy(): ValidationProfileInput {
   return {
     id: "benchmark:ocsp-first",
     version: 1,
@@ -263,7 +263,7 @@ function ocspPolicy(): TrustPolicyInput {
   };
 }
 
-function crlPolicy(): TrustPolicyInput {
+function crlPolicy(): ValidationProfileInput {
   return {
     id: "benchmark:crl",
     version: 1,
@@ -299,10 +299,10 @@ const provider = createEvidenceProvider({
   queueTimeoutMs: 5000
 });
 
-function makeValidator(policy: TrustPolicyInput) {
+function makeValidator(profile: ValidationProfileInput) {
   return createTrustValidator({
     trustAnchors: [mainChain.root.der],
-    policy,
+    profile,
     provider,
     now,
     deadlineMs: 10_000
@@ -491,7 +491,7 @@ await resetServer();
 server.state.leafCrl = largeLeafCrl;
 const largeInlineNoIndex = createTrustValidator({
   trustAnchors: [mainChain.root.der],
-  policy: crlPolicy(),
+  profile: crlPolicy(),
   provider,
   crlIndexCache: false,
   now,
@@ -514,7 +514,7 @@ await resetServer();
 server.state.leafCrl = largeLeafCrl;
 const largeInlineIndex = createTrustValidator({
   trustAnchors: [mainChain.root.der],
-  policy: crlPolicy(),
+  profile: crlPolicy(),
   provider,
   crlIndexCache: { maxEntries: 8, maxBytes: 64 * 1024 * 1024 },
   now,
@@ -543,7 +543,7 @@ const workerNoIndexEngine = createWorkerPkiEngine({
 });
 const largeWorkerNoIndex = createTrustValidator({
   trustAnchors: [mainChain.root.der],
-  policy: crlPolicy(),
+  profile: crlPolicy(),
   provider,
   engine: workerNoIndexEngine,
   now,
@@ -573,7 +573,7 @@ const workerEngine = createWorkerPkiEngine({
 });
 const largeWorkerIndex = createTrustValidator({
   trustAnchors: [mainChain.root.der],
-  policy: crlPolicy(),
+  profile: crlPolicy(),
   provider,
   engine: workerEngine,
   now,

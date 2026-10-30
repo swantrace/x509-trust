@@ -31,12 +31,12 @@ semantics.
 | Delegated OCSP responders | Not supported | Not claimed without independent authorization tests. |
 | Delta or indirect CRLs | Not supported | Rejected as unsupported evidence. |
 | OCSP responses without `nextUpdate` | Not accepted | Treated as unknown so another source may be tried. |
-| Cached evidence | Verified | Raw DER is cached and reauthenticated for the current certificate, issuer, time and policy. |
+| Cached evidence | Verified | Raw DER is cached and reauthenticated for the current certificate, issuer, time and profile. |
 
 ## Deliberately outside this library
 
 JWT/OAuth/FHIR business validation, issuer/SAN matching, AIA certificate
 download, TLS hostname verification for the evidence endpoints, automatic
-trust of system roots, and real community (for example Carequality or TEFCA)
-policy presets. A successful result means certificate trust and configured
+trust of system roots, and external framework profiles (for example Carequality
+or TEFCA) presets. A successful result means certificate trust and configured
 revocation evidence only.

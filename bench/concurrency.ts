@@ -9,7 +9,7 @@ import { createCrlIndexCache } from "../src/engine/crl-index-cache.ts";
 import {
   createEvidenceProvider,
   createTrustValidator,
-  type TrustPolicyInput,
+  type ValidationProfileInput,
   type ValidationResult
 } from "../src/index.ts";
 import { createWorkerPkiEngine } from "../src/worker.ts";
@@ -225,7 +225,7 @@ const directCertificate = Certificate.fromBER(chain.leaf.der);
 const directIssuer = Certificate.fromBER(chain.intermediate.der);
 const chainInput = [chain.leaf.der, chain.intermediate.der];
 
-function crlPolicy(): TrustPolicyInput {
+function crlPolicy(): ValidationProfileInput {
   return {
     id: "load:crl",
     version: 1,
@@ -263,7 +263,7 @@ const directWorkerNoIndexEngine = createWorkerPkiEngine({
 });
 const inlineIndexValidator = createTrustValidator({
   trustAnchors: [chain.root.der],
-  policy: crlPolicy(),
+  profile: crlPolicy(),
   provider: provider(),
   crlIndexCache: { maxEntries: 8, maxBytes: 64 * 1024 * 1024 },
   now
@@ -277,7 +277,7 @@ const workerIndexEngine = createWorkerPkiEngine({
 });
 const workerIndexValidator = createTrustValidator({
   trustAnchors: [chain.root.der],
-  policy: crlPolicy(),
+  profile: crlPolicy(),
   provider: provider(),
   engine: workerIndexEngine,
   now

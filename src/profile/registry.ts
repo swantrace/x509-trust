@@ -3,7 +3,7 @@ import type { DiagnosticCallback } from "../diagnostics.ts";
 import type { CertificateInput } from "../engine/certificate-path.ts";
 import type { CrlIndexCacheOptions } from "../engine/crl-index-cache.ts";
 import type { PkiEngine } from "../engine/pki-engine.ts";
-import { invalidPolicy } from "../errors.ts";
+import { invalidProfile } from "../errors.ts";
 import type { CacheStore } from "../evidence/cache.ts";
 import type { EvidenceProvider } from "../evidence/evidence-provider.ts";
 import type {
@@ -17,23 +17,22 @@ import {
   type ValidationResult
 } from "../validator/trust-validator.ts";
 import {
-  compileTrustPolicy,
-  type PolicyVersion,
-  type TrustPolicyInput
-} from "./policy.ts";
+  compileValidationProfile,
+  type ProfileVersion,
+  type ValidationProfileInput
+} from "./profile.ts";
 import {
   normalizeRuleRegistrations,
   type TrustRuleRegistration
 } from "./rules.ts";
 
-export interface TrustCommunityRegistration {
-  communityId: string;
+export interface ValidationProfileRegistration {
+  profile: ValidationProfileInput;
   trustAnchors: readonly CertificateInput[];
-  policy: TrustPolicyInput;
   rules?: readonly TrustRuleRegistration[];
 }
 
-export interface TrustRegistryOptions {
+export interface ValidationProfileRegistryOptions {
   loadCrl?:
     | ((url: string, options?: CrlLoadOptions) => Promise<Uint8Array>)
     | false;
@@ -50,60 +49,64 @@ export interface TrustRegistryOptions {
   onDiagnostic?: DiagnosticCallback;
 }
 
-export interface TrustRegistryVerifyOptions {
-  communityId: string;
-  policyVersion?: PolicyVersion;
+export interface ValidationProfileRegistryVerifyOptions {
+  profileId: string;
+  profileVersion?: ProfileVersion;
   certificateChain: readonly CertificateInput[];
   checkDate?: Date;
 }
 
-export interface TrustRegistry {
+export interface ValidationProfileRegistry {
   register(registration: unknown): void;
   verify(options: unknown): Promise<ValidationResult>;
 }
 
-interface PolicySnapshot {
-  version: PolicyVersion;
+interface ProfileSnapshot {
+  version: ProfileVersion;
   versionOrder: number;
   validator: TrustValidator;
 }
 
 function assertRegistrationShape(
   input: unknown
-): asserts input is TrustCommunityRegistration {
+): asserts input is ValidationProfileRegistration {
   if (input === null || typeof input !== "object" || Array.isArray(input)) {
-    throw invalidPolicy("community registration must be an object");
+    throw invalidProfile("profile registration must be an object");
   }
   for (const key of Object.keys(input)) {
-    if (!["communityId", "trustAnchors", "policy", "rules"].includes(key)) {
-      throw invalidPolicy(
-        `community registration contains unknown field "${key}"`
+    if (!["profile", "trustAnchors", "rules"].includes(key)) {
+      throw invalidProfile(
+        `profile registration contains unknown field "${key}"`
       );
     }
   }
-  const { communityId, trustAnchors } = input as {
-    communityId?: unknown;
+  const { profile, trustAnchors } = input as {
+    profile?: unknown;
     trustAnchors?: unknown;
   };
-  if (typeof communityId !== "string" || communityId.trim() === "") {
-    throw invalidPolicy("communityId must be a non-empty string");
+  if (
+    profile === null ||
+    typeof profile !== "object" ||
+    Array.isArray(profile)
+  ) {
+    throw invalidProfile("profile must be an object");
   }
   if (!Array.isArray(trustAnchors) || trustAnchors.length === 0) {
-    throw invalidPolicy("trustAnchors must be a non-empty array");
+    throw invalidProfile("trustAnchors must be a non-empty array");
   }
 }
 
 function assertVerifyOptionsShape(
   input: unknown
-): asserts input is TrustRegistryVerifyOptions {
+): asserts input is ValidationProfileRegistryVerifyOptions {
   if (input === null || typeof input !== "object" || Array.isArray(input)) {
     throw new TypeError("verify options must be an object");
   }
   for (const key of Object.keys(input)) {
     if (
       ![
-        "communityId",
-        "policyVersion",
+        "profileId",
+        "profileVersion",
         "certificateChain",
         "checkDate"
       ].includes(key)
@@ -111,25 +114,27 @@ function assertVerifyOptionsShape(
       throw new TypeError(`verify options contain unknown field "${key}"`);
     }
   }
-  const { communityId, policyVersion, certificateChain, checkDate } = input as {
-    communityId?: unknown;
-    policyVersion?: unknown;
+  const { profileId, profileVersion, certificateChain, checkDate } = input as {
+    profileId?: unknown;
+    profileVersion?: unknown;
     certificateChain?: unknown;
     checkDate?: unknown;
   };
-  if (typeof communityId !== "string" || communityId.trim() === "") {
-    throw new TypeError("communityId must be a non-empty string");
+  if (typeof profileId !== "string" || profileId.trim() === "") {
+    throw new TypeError("profileId must be a non-empty string");
   }
-  if (policyVersion !== undefined) {
-    if (typeof policyVersion === "string") {
-      if (policyVersion.trim() === "") {
-        throw new TypeError("policyVersion must be a non-empty string");
+  if (profileVersion !== undefined) {
+    if (typeof profileVersion === "string") {
+      if (profileVersion.trim() === "") {
+        throw new TypeError("profileVersion must be a non-empty string");
       }
     } else if (
-      !Number.isSafeInteger(policyVersion) ||
-      (policyVersion as number) <= 0
+      !Number.isSafeInteger(profileVersion) ||
+      (profileVersion as number) <= 0
     ) {
-      throw new TypeError("policyVersion must be a string or positive integer");
+      throw new TypeError(
+        "profileVersion must be a string or positive integer"
+      );
     }
   }
   if (!Array.isArray(certificateChain)) {
@@ -140,32 +145,33 @@ function assertVerifyOptionsShape(
   }
 }
 
-export function createTrustRegistry(
-  options: TrustRegistryOptions = {}
-): TrustRegistry {
-  const communities = new Map<string, Map<string, PolicySnapshot>>();
+export function createValidationProfileRegistry(
+  options: ValidationProfileRegistryOptions = {}
+): ValidationProfileRegistry {
+  const profiles = new Map<string, Map<string, ProfileSnapshot>>();
 
   return {
     register(registration): void {
       assertRegistrationShape(registration);
-      const communityId = registration.communityId;
+      const profileInput = registration.profile;
       const rules = normalizeRuleRegistrations(registration.rules);
       // Compile once for duplicate/version validation; the validator compiles
       // its own immutable copy for the lifetime of the registered snapshot.
-      const policy = compileTrustPolicy(registration.policy, {
+      const profile = compileValidationProfile(profileInput, {
         registeredRuleNames: rules.map((rule) => rule.name)
       });
-      let versions = communities.get(communityId);
-      const versionKey = String(policy.version);
+      const profileId = profile.id;
+      const versionKey = String(profile.version);
+      let versions = profiles.get(profileId);
       if (versions?.has(versionKey)) {
-        throw invalidPolicy(
-          `Community "${communityId}" policy version ${policy.version} is already registered`
+        throw invalidProfile(
+          `Profile "${profileId}" version ${profile.version} is already registered`
         );
       }
       for (const existing of versions?.values() ?? []) {
-        if (existing.versionOrder === policy.versionOrder) {
-          throw invalidPolicy(
-            `Community "${communityId}" already has a policy with versionOrder ${policy.versionOrder}`
+        if (existing.versionOrder === profile.versionOrder) {
+          throw invalidProfile(
+            `Profile "${profileId}" already has versionOrder ${profile.versionOrder}`
           );
         }
       }
@@ -175,56 +181,55 @@ export function createTrustRegistry(
           Uint8Array.from(new X509Certificate(anchor).raw)
         );
       } catch {
-        throw invalidPolicy("trustAnchors contains an invalid certificate");
+        throw invalidProfile("trustAnchors contains an invalid certificate");
       }
       const validator = createTrustValidator({
         ...options,
         trustAnchors,
-        policy: registration.policy,
-        rules,
-        communityId
+        profile: profileInput,
+        rules
       });
       if (!versions) {
         versions = new Map();
-        communities.set(communityId, versions);
+        profiles.set(profileId, versions);
       }
       versions.set(versionKey, {
-        version: policy.version,
-        versionOrder: policy.versionOrder,
+        version: profile.version,
+        versionOrder: profile.versionOrder,
         validator
       });
     },
 
     async verify(request): Promise<ValidationResult> {
       assertVerifyOptionsShape(request);
-      const versions = communities.get(request.communityId);
+      const versions = profiles.get(request.profileId);
       if (!versions) {
         return {
           valid: false,
-          code: "UNKNOWN_COMMUNITY",
-          message: `Unknown trust community: ${request.communityId}`
+          code: "UNKNOWN_PROFILE",
+          message: `Unknown validation profile: ${request.profileId}`
         };
       }
-      let snapshot: PolicySnapshot | undefined;
-      if (request.policyVersion === undefined) {
+      let snapshot: ProfileSnapshot | undefined;
+      if (request.profileVersion === undefined) {
         for (const candidate of versions.values()) {
           if (!snapshot || candidate.versionOrder > snapshot.versionOrder) {
             snapshot = candidate;
           }
         }
       } else {
-        snapshot = versions.get(String(request.policyVersion));
+        snapshot = versions.get(String(request.profileVersion));
       }
       if (!snapshot) {
         return {
           valid: false,
-          code: "UNKNOWN_POLICY_VERSION",
-          message: `Community "${request.communityId}" has no policy version ${request.policyVersion}`,
-          communityId: request.communityId
+          code: "UNKNOWN_PROFILE_VERSION",
+          message: `Profile "${request.profileId}" has no version ${request.profileVersion}`,
+          profileId: request.profileId
         };
       }
       // The snapshot is chosen before any await, so a later registration
-      // cannot change the policy or anchors used by this request.
+      // cannot change the profile or anchors used by this request.
       return snapshot.validator.verify({
         certificateChain: request.certificateChain,
         checkDate: request.checkDate

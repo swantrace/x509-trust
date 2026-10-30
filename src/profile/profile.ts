@@ -1,10 +1,10 @@
 import type { KeyUsageName } from "../engine/leaf-certificate.ts";
-import { invalidPolicy, unsupportedPolicy } from "../errors.ts";
+import { invalidProfile, unsupportedProfile } from "../errors.ts";
 
 export type RevocationMechanism = "crl" | "ocsp";
 export type RequiredEvidence = "any" | "crl" | "ocsp" | "both";
-export type PolicyVersion = string | number;
-export type PolicyCapability =
+export type ProfileVersion = string | number;
+export type ProfileCapability =
   | "revocation:any"
   | "revocation:crl"
   | "revocation:ocsp"
@@ -14,25 +14,25 @@ export type PolicyCapability =
   | "revocation:zero-clock-skew"
   | "rules:leaf-key-usage"
   | "rules:leaf-extended-key-usage"
-  | "rules:required-leaf-policy-oids"
+  | "rules:required-certificate-policy-oids"
   | "rules:max-path-depth"
   | "rules:required-rule-names";
 
-export interface PolicySource {
+export interface ProfileSource {
   uri: string;
   version?: string;
   effectiveDate?: string;
 }
 
-export interface TrustPolicyInput {
+export interface ValidationProfileInput {
   id: string;
-  version: PolicyVersion;
+  version: ProfileVersion;
   /** Explicit ordering used to select the latest version in a registry. */
   versionOrder?: number;
-  source: string | PolicySource;
+  source: string | ProfileSource;
   anchorSetId: string;
-  /** Capabilities this policy explicitly requires the engine to support. */
-  requiredCapabilities?: readonly PolicyCapability[];
+  /** Capabilities this profile explicitly requires the engine to support. */
+  requiredCapabilities?: readonly ProfileCapability[];
   revocation?: {
     requiredEvidence?: RequiredEvidence;
     sourceOrder?: readonly RevocationMechanism[];
@@ -44,22 +44,22 @@ export interface TrustPolicyInput {
   rules?: {
     leafKeyUsage?: readonly KeyUsageName[];
     leafExtendedKeyUsage?: readonly string[];
-    requiredLeafPolicyOids?: readonly string[];
+    requiredCertificatePolicyOids?: readonly string[];
     maxPathDepth?: number;
     requiredRuleNames?: readonly string[];
   };
 }
 
-export interface CompiledTrustPolicy {
+export interface CompiledValidationProfile {
   readonly id: string;
-  readonly version: PolicyVersion;
+  readonly version: ProfileVersion;
   readonly versionOrder: number;
-  readonly source: Readonly<PolicySource>;
+  readonly source: Readonly<ProfileSource>;
   readonly anchorSetId: string;
   /** Capabilities explicitly declared by the caller. */
-  readonly requiredCapabilities: readonly PolicyCapability[];
-  /** Capabilities actually exercised by the compiled policy. */
-  readonly capabilities: readonly PolicyCapability[];
+  readonly requiredCapabilities: readonly ProfileCapability[];
+  /** Capabilities actually exercised by the compiled profile. */
+  readonly capabilities: readonly ProfileCapability[];
   readonly revocation: Readonly<{
     requiredEvidence: RequiredEvidence;
     sourceOrder: readonly RevocationMechanism[];
@@ -71,73 +71,77 @@ export interface CompiledTrustPolicy {
   readonly rules?: Readonly<{
     leafKeyUsage?: readonly KeyUsageName[];
     leafExtendedKeyUsage?: readonly string[];
-    requiredLeafPolicyOids?: readonly string[];
+    requiredCertificatePolicyOids?: readonly string[];
     maxPathDepth?: number;
     requiredRuleNames?: readonly string[];
   }>;
 }
 
-export const POLICY_CAPABILITIES: readonly PolicyCapability[] = Object.freeze([
-  "revocation:any",
-  "revocation:crl",
-  "revocation:ocsp",
-  "revocation:both",
-  "revocation:non-anchor-chain",
-  "revocation:require-next-update",
-  "revocation:zero-clock-skew",
-  "rules:leaf-key-usage",
-  "rules:leaf-extended-key-usage",
-  "rules:required-leaf-policy-oids",
-  "rules:max-path-depth",
-  "rules:required-rule-names"
-] as const);
-
-const SUPPORTED_CAPABILITIES = new Set<string>(POLICY_CAPABILITIES);
-
-export interface CompilePolicyOptions {
-  registeredRuleNames?: readonly string[];
-}
-
-export const DEFAULT_TRUST_POLICY: TrustPolicyInput = Object.freeze({
-  id: "x509-trust:strict-default",
-  version: 1,
-  versionOrder: 1,
-  source: Object.freeze({
-    uri: "x509-trust:built-in-strict-default",
-    version: "1"
-  }),
-  anchorSetId: "explicit",
-  requiredCapabilities: Object.freeze([
+export const PROFILE_CAPABILITIES: readonly ProfileCapability[] = Object.freeze(
+  [
     "revocation:any",
     "revocation:crl",
     "revocation:ocsp",
+    "revocation:both",
     "revocation:non-anchor-chain",
     "revocation:require-next-update",
-    "revocation:zero-clock-skew"
-  ] as const),
-  revocation: Object.freeze({
-    requiredEvidence: "any" as const,
-    sourceOrder: Object.freeze(["ocsp", "crl"] as const),
-    onUnknown: "reject" as const,
-    scope: "non-anchor-chain" as const,
-    requireNextUpdate: true as const,
-    clockSkewMs: 0 as const
-  })
-});
+    "revocation:zero-clock-skew",
+    "rules:leaf-key-usage",
+    "rules:leaf-extended-key-usage",
+    "rules:required-certificate-policy-oids",
+    "rules:max-path-depth",
+    "rules:required-rule-names"
+  ] as const
+);
 
-export const trustPolicyCapabilities = Object.freeze({
-  supported: POLICY_CAPABILITIES,
+const SUPPORTED_CAPABILITIES = new Set<string>(PROFILE_CAPABILITIES);
+
+export interface CompileProfileOptions {
+  registeredRuleNames?: readonly string[];
+}
+
+export const DEFAULT_VALIDATION_PROFILE: ValidationProfileInput = Object.freeze(
+  {
+    id: "x509-trust:strict-default",
+    version: 1,
+    versionOrder: 1,
+    source: Object.freeze({
+      uri: "x509-trust:built-in-strict-default",
+      version: "1"
+    }),
+    anchorSetId: "explicit",
+    requiredCapabilities: Object.freeze([
+      "revocation:any",
+      "revocation:crl",
+      "revocation:ocsp",
+      "revocation:non-anchor-chain",
+      "revocation:require-next-update",
+      "revocation:zero-clock-skew"
+    ] as const),
+    revocation: Object.freeze({
+      requiredEvidence: "any" as const,
+      sourceOrder: Object.freeze(["ocsp", "crl"] as const),
+      onUnknown: "reject" as const,
+      scope: "non-anchor-chain" as const,
+      requireNextUpdate: true as const,
+      clockSkewMs: 0 as const
+    })
+  }
+);
+
+export const profileCapabilities = Object.freeze({
+  supported: PROFILE_CAPABILITIES,
   revocationScope: Object.freeze(["non-anchor-chain"] as const),
   requiredEvidence: Object.freeze(["any", "crl", "ocsp", "both"] as const),
   rules: Object.freeze([
     "leafKeyUsage",
     "leafExtendedKeyUsage",
-    "requiredLeafPolicyOids",
+    "requiredCertificatePolicyOids",
     "maxPathDepth",
     "requiredRuleNames"
   ] as const),
   unsupported: Object.freeze({
-    fullPathPolicyProcessing:
+    fullPathCertificatePolicyProcessing:
       "Certificate policy OIDs are read from the leaf only; no RFC 5280 policy tree result is claimed.",
     delegatedOcsp: "Delegated OCSP responders are not verified.",
     deltaOrIndirectCrl: "Delta and indirect CRLs are rejected.",
@@ -173,20 +177,20 @@ function assertObject(
   allowedKeys: readonly string[]
 ): asserts value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw invalidPolicy(`${path} must be an object`);
+    throw invalidProfile(`${path} must be an object`);
   }
   const allowed = new Set(allowedKeys);
   for (const key of Object.keys(value)) {
     if ((value as Record<string, unknown>)[key] === undefined) continue;
     if (!allowed.has(key)) {
-      throw invalidPolicy(`${path} contains unknown field "${key}"`);
+      throw invalidProfile(`${path} contains unknown field "${key}"`);
     }
   }
 }
 
 function nonEmptyString(value: unknown, path: string): string {
   if (typeof value !== "string" || value.trim() === "") {
-    throw invalidPolicy(`${path} must be a non-empty string`);
+    throw invalidProfile(`${path} must be a non-empty string`);
   }
   return value;
 }
@@ -197,16 +201,16 @@ function copyStringList(
   validate?: (entry: string) => string
 ): string[] {
   if (!Array.isArray(value) || value.length === 0) {
-    throw invalidPolicy(`${path} must be a non-empty array`);
+    throw invalidProfile(`${path} must be a non-empty array`);
   }
   const result: string[] = [];
   for (const entry of value) {
     if (typeof entry !== "string" || entry.trim() === "") {
-      throw invalidPolicy(`${path} entries must be non-empty strings`);
+      throw invalidProfile(`${path} entries must be non-empty strings`);
     }
     const normalized = validate ? validate(entry) : entry;
     if (result.includes(normalized)) {
-      throw invalidPolicy(`${path} must not contain duplicates`);
+      throw invalidProfile(`${path} must not contain duplicates`);
     }
     result.push(normalized);
   }
@@ -215,7 +219,7 @@ function copyStringList(
 
 function oid(value: string, path: string): string {
   if (!OID.test(value)) {
-    throw invalidPolicy(`${path} contains an invalid OID "${value}"`);
+    throw invalidProfile(`${path} contains an invalid OID "${value}"`);
   }
   return value;
 }
@@ -230,56 +234,56 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-function compilePolicyVersion(
+function compileProfileVersion(
   version: unknown,
   versionOrder: unknown
-): { version: PolicyVersion; versionOrder: number } {
+): { version: ProfileVersion; versionOrder: number } {
   let order: number | undefined;
   if (versionOrder !== undefined) {
     if (!Number.isSafeInteger(versionOrder) || (versionOrder as number) <= 0) {
-      throw invalidPolicy("policy.versionOrder must be a positive integer");
+      throw invalidProfile("profile.versionOrder must be a positive integer");
     }
     order = versionOrder as number;
   }
   if (typeof version === "number") {
     if (!Number.isSafeInteger(version) || version <= 0) {
-      throw invalidPolicy("policy.version must be a positive integer");
+      throw invalidProfile("profile.version must be a positive integer");
     }
     return { version, versionOrder: order ?? version };
   }
   if (typeof version === "string") {
     if (version.trim() === "") {
-      throw invalidPolicy("policy.version must be a non-empty string");
+      throw invalidProfile("profile.version must be a non-empty string");
     }
     if (order === undefined) {
-      throw invalidPolicy(
-        "policy.versionOrder is required when policy.version is a string"
+      throw invalidProfile(
+        "profile.versionOrder is required when profile.version is a string"
       );
     }
     return { version, versionOrder: order };
   }
-  throw invalidPolicy("policy.version must be a string or positive integer");
+  throw invalidProfile("profile.version must be a string or positive integer");
 }
 
-function compilePolicySource(value: unknown): PolicySource {
+function compileProfileSource(value: unknown): ProfileSource {
   if (typeof value === "string") {
-    return { uri: nonEmptyString(value, "policy.source") };
+    return { uri: nonEmptyString(value, "profile.source") };
   }
-  assertObject(value, "policy.source", ["uri", "version", "effectiveDate"]);
-  const uri = nonEmptyString(value.uri, "policy.source.uri");
+  assertObject(value, "profile.source", ["uri", "version", "effectiveDate"]);
+  const uri = nonEmptyString(value.uri, "profile.source.uri");
   const sourceVersion =
     value.version === undefined
       ? undefined
-      : nonEmptyString(value.version, "policy.source.version");
+      : nonEmptyString(value.version, "profile.source.version");
   let effectiveDate: string | undefined;
   if (value.effectiveDate !== undefined) {
     effectiveDate = nonEmptyString(
       value.effectiveDate,
-      "policy.source.effectiveDate"
+      "profile.source.effectiveDate"
     );
     if (Number.isNaN(Date.parse(effectiveDate))) {
-      throw invalidPolicy(
-        "policy.source.effectiveDate must be a valid date string"
+      throw invalidProfile(
+        "profile.source.effectiveDate must be a valid date string"
       );
     }
   }
@@ -290,21 +294,23 @@ function compilePolicySource(value: unknown): PolicySource {
   };
 }
 
-function copyCapabilities(value: unknown, path: string): PolicyCapability[] {
+function copyCapabilities(value: unknown, path: string): ProfileCapability[] {
   const capabilities = copyStringList(value, path);
   for (const capability of capabilities) {
     if (!SUPPORTED_CAPABILITIES.has(capability)) {
-      throw unsupportedPolicy(`Unsupported policy capability "${capability}"`);
+      throw unsupportedProfile(
+        `Unsupported profile capability "${capability}"`
+      );
     }
   }
-  return capabilities as PolicyCapability[];
+  return capabilities as ProfileCapability[];
 }
 
-export function compileTrustPolicy(
-  input: unknown = DEFAULT_TRUST_POLICY,
-  { registeredRuleNames = [] }: CompilePolicyOptions = {}
-): CompiledTrustPolicy {
-  assertObject(input, "policy", [
+export function compileValidationProfile(
+  input: unknown = DEFAULT_VALIDATION_PROFILE,
+  { registeredRuleNames = [] }: CompileProfileOptions = {}
+): CompiledValidationProfile {
+  assertObject(input, "profile", [
     "id",
     "version",
     "versionOrder",
@@ -314,25 +320,25 @@ export function compileTrustPolicy(
     "revocation",
     "rules"
   ]);
-  const id = nonEmptyString(input.id, "policy.id");
-  const { version, versionOrder } = compilePolicyVersion(
+  const id = nonEmptyString(input.id, "profile.id");
+  const { version, versionOrder } = compileProfileVersion(
     input.version,
     input.versionOrder
   );
-  const source = compilePolicySource(input.source);
-  const anchorSetId = nonEmptyString(input.anchorSetId, "policy.anchorSetId");
+  const source = compileProfileSource(input.source);
+  const anchorSetId = nonEmptyString(input.anchorSetId, "profile.anchorSetId");
   const requiredCapabilities =
     input.requiredCapabilities === undefined
       ? []
       : copyCapabilities(
           input.requiredCapabilities,
-          "policy.requiredCapabilities"
+          "profile.requiredCapabilities"
         );
 
   let requiredEvidence: RequiredEvidence = "any";
   let sourceOrder: RevocationMechanism[] = ["ocsp", "crl"];
   if (input.revocation !== undefined) {
-    assertObject(input.revocation, "policy.revocation", [
+    assertObject(input.revocation, "profile.revocation", [
       "requiredEvidence",
       "sourceOrder",
       "onUnknown",
@@ -346,7 +352,7 @@ export function compileTrustPolicy(
         typeof revocation.requiredEvidence !== "string" ||
         !REQUIRED_EVIDENCE.has(revocation.requiredEvidence as RequiredEvidence)
       ) {
-        throw unsupportedPolicy(
+        throw unsupportedProfile(
           `Unsupported revocation.requiredEvidence: ${String(
             revocation.requiredEvidence
           )}`
@@ -357,11 +363,13 @@ export function compileTrustPolicy(
     if (revocation.sourceOrder !== undefined) {
       const order = copyStringList(
         revocation.sourceOrder,
-        "policy.revocation.sourceOrder"
+        "profile.revocation.sourceOrder"
       );
       sourceOrder = order.map((entry) => {
         if (!REVOCATION_MECHANISMS.has(entry as RevocationMechanism)) {
-          throw unsupportedPolicy(`Unsupported revocation mechanism: ${entry}`);
+          throw unsupportedProfile(
+            `Unsupported revocation mechanism: ${entry}`
+          );
         }
         return entry as RevocationMechanism;
       });
@@ -370,7 +378,7 @@ export function compileTrustPolicy(
       revocation.onUnknown !== undefined &&
       revocation.onUnknown !== "reject"
     ) {
-      throw unsupportedPolicy(
+      throw unsupportedProfile(
         'Only revocation.onUnknown = "reject" is supported'
       );
     }
@@ -378,7 +386,7 @@ export function compileTrustPolicy(
       revocation.scope !== undefined &&
       revocation.scope !== "non-anchor-chain"
     ) {
-      throw unsupportedPolicy(
+      throw unsupportedProfile(
         'Only revocation.scope = "non-anchor-chain" is supported'
       );
     }
@@ -386,10 +394,10 @@ export function compileTrustPolicy(
       revocation.requireNextUpdate !== undefined &&
       revocation.requireNextUpdate !== true
     ) {
-      throw unsupportedPolicy("Evidence without nextUpdate is not supported");
+      throw unsupportedProfile("Evidence without nextUpdate is not supported");
     }
     if (revocation.clockSkewMs !== undefined && revocation.clockSkewMs !== 0) {
-      throw unsupportedPolicy(
+      throw unsupportedProfile(
         "Non-zero revocation clock skew is not supported"
       );
     }
@@ -403,18 +411,18 @@ export function compileTrustPolicy(
         : ([requiredEvidence] as const);
   for (const mechanism of requiredMechanisms) {
     if (!sourceOrder.includes(mechanism)) {
-      throw invalidPolicy(
-        `policy.revocation.sourceOrder must include required mechanism "${mechanism}"`
+      throw invalidProfile(
+        `profile.revocation.sourceOrder must include required mechanism "${mechanism}"`
       );
     }
   }
 
-  let rules: CompiledTrustPolicy["rules"];
+  let rules: CompiledValidationProfile["rules"];
   if (input.rules !== undefined) {
-    assertObject(input.rules, "policy.rules", [
+    assertObject(input.rules, "profile.rules", [
       "leafKeyUsage",
       "leafExtendedKeyUsage",
-      "requiredLeafPolicyOids",
+      "requiredCertificatePolicyOids",
       "maxPathDepth",
       "requiredRuleNames"
     ]);
@@ -422,18 +430,18 @@ export function compileTrustPolicy(
     const normalizedRules: {
       leafKeyUsage?: readonly KeyUsageName[];
       leafExtendedKeyUsage?: readonly string[];
-      requiredLeafPolicyOids?: readonly string[];
+      requiredCertificatePolicyOids?: readonly string[];
       maxPathDepth?: number;
       requiredRuleNames?: readonly string[];
     } = {};
     if (inputRules.leafKeyUsage !== undefined) {
       const usages = copyStringList(
         inputRules.leafKeyUsage,
-        "policy.rules.leafKeyUsage"
+        "profile.rules.leafKeyUsage"
       );
       for (const usage of usages) {
         if (!KEY_USAGE_NAMES.has(usage as KeyUsageName)) {
-          throw unsupportedPolicy(`Unsupported key usage: ${usage}`);
+          throw unsupportedProfile(`Unsupported key usage: ${usage}`);
         }
       }
       normalizedRules.leafKeyUsage = usages as KeyUsageName[];
@@ -441,15 +449,15 @@ export function compileTrustPolicy(
     if (inputRules.leafExtendedKeyUsage !== undefined) {
       normalizedRules.leafExtendedKeyUsage = copyStringList(
         inputRules.leafExtendedKeyUsage,
-        "policy.rules.leafExtendedKeyUsage",
-        (entry) => oid(entry, "policy.rules.leafExtendedKeyUsage")
+        "profile.rules.leafExtendedKeyUsage",
+        (entry) => oid(entry, "profile.rules.leafExtendedKeyUsage")
       );
     }
-    if (inputRules.requiredLeafPolicyOids !== undefined) {
-      normalizedRules.requiredLeafPolicyOids = copyStringList(
-        inputRules.requiredLeafPolicyOids,
-        "policy.rules.requiredLeafPolicyOids",
-        (entry) => oid(entry, "policy.rules.requiredLeafPolicyOids")
+    if (inputRules.requiredCertificatePolicyOids !== undefined) {
+      normalizedRules.requiredCertificatePolicyOids = copyStringList(
+        inputRules.requiredCertificatePolicyOids,
+        "profile.rules.requiredCertificatePolicyOids",
+        (entry) => oid(entry, "profile.rules.requiredCertificatePolicyOids")
       );
     }
     if (inputRules.maxPathDepth !== undefined) {
@@ -457,8 +465,8 @@ export function compileTrustPolicy(
         !Number.isSafeInteger(inputRules.maxPathDepth) ||
         (inputRules.maxPathDepth as number) < 1
       ) {
-        throw invalidPolicy(
-          "policy.rules.maxPathDepth must be a positive integer"
+        throw invalidProfile(
+          "profile.rules.maxPathDepth must be a positive integer"
         );
       }
       normalizedRules.maxPathDepth = inputRules.maxPathDepth as number;
@@ -466,12 +474,12 @@ export function compileTrustPolicy(
     if (inputRules.requiredRuleNames !== undefined) {
       const names = copyStringList(
         inputRules.requiredRuleNames,
-        "policy.rules.requiredRuleNames"
+        "profile.rules.requiredRuleNames"
       );
       const registered = new Set(registeredRuleNames);
       for (const name of names) {
         if (!registered.has(name)) {
-          throw unsupportedPolicy(
+          throw unsupportedProfile(
             `No registered rule handler is available for "${name}"`
           );
         }
@@ -483,7 +491,7 @@ export function compileTrustPolicy(
     }
   }
 
-  const capabilities = new Set<PolicyCapability>([
+  const capabilities = new Set<ProfileCapability>([
     `revocation:${requiredEvidence}`,
     "revocation:non-anchor-chain",
     "revocation:require-next-update",
@@ -495,8 +503,8 @@ export function compileTrustPolicy(
   if (rules?.leafKeyUsage) capabilities.add("rules:leaf-key-usage");
   if (rules?.leafExtendedKeyUsage)
     capabilities.add("rules:leaf-extended-key-usage");
-  if (rules?.requiredLeafPolicyOids)
-    capabilities.add("rules:required-leaf-policy-oids");
+  if (rules?.requiredCertificatePolicyOids)
+    capabilities.add("rules:required-certificate-policy-oids");
   if (rules?.maxPathDepth) capabilities.add("rules:max-path-depth");
   if (rules?.requiredRuleNames) capabilities.add("rules:required-rule-names");
 

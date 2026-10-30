@@ -6,7 +6,7 @@ import {
   createEvidenceProvider,
   createTrustValidator,
   ResourceLimitError,
-  type TrustPolicyInput
+  type ValidationProfileInput
 } from "../src/index.ts";
 import { createWorkerPkiEngine } from "../src/worker.ts";
 import {
@@ -55,7 +55,7 @@ after(async () => {
   await worker.close({ force: true });
 });
 
-function policy(): TrustPolicyInput {
+function policy(): ValidationProfileInput {
   return {
     id: "worker:policy",
     version: 1,
@@ -157,13 +157,13 @@ test("worker CRL and OCSP validation match the inline engine", async () => {
 test("worker-backed validation matches inline success and failure outcomes", async () => {
   const inlineValidator = createTrustValidator({
     trustAnchors: [chain.root.der],
-    policy: policy(),
+    profile: policy(),
     provider: provider(),
     now: () => checkDateMs
   });
   const workerValidator = createTrustValidator({
     trustAnchors: [chain.root.der],
-    policy: policy(),
+    profile: policy(),
     provider: provider(),
     engine: worker,
     now: () => checkDateMs
@@ -198,7 +198,7 @@ test("worker-backed validation matches inline success and failure outcomes", asy
   const revokedCrl = await createCrl(chain.intermediate, [revokedLeaf]);
   const inlineRevoked = await createTrustValidator({
     trustAnchors: [chain.root.der],
-    policy: policy(),
+    profile: policy(),
     provider: createEvidenceProvider({
       loadOcsp: false,
       loadCrl: async (url) =>
@@ -208,7 +208,7 @@ test("worker-backed validation matches inline success and failure outcomes", asy
   }).verify({ certificateChain: [revokedLeaf.der, chain.intermediate.der] });
   const workerRevoked = await createTrustValidator({
     trustAnchors: [chain.root.der],
-    policy: policy(),
+    profile: policy(),
     provider: createEvidenceProvider({
       loadOcsp: false,
       loadCrl: async (url) =>

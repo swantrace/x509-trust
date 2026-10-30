@@ -2,7 +2,7 @@ import type { CrlValidationResult } from "../engine/crl.ts";
 import type { OcspValidationResult } from "../engine/ocsp.ts";
 import type { PreparedCertificate } from "../engine/pki-engine.ts";
 import { ResourceLimitError } from "../errors.ts";
-import type { CompiledTrustPolicy } from "../policy/policy.ts";
+import type { CompiledValidationProfile } from "../profile/profile.ts";
 import {
   type CertificateFindings,
   decideRevocationEvidence,
@@ -36,7 +36,7 @@ export type CertificateRevocation =
     };
 
 interface EvidenceCollectorOptions {
-  policy: CompiledTrustPolicy;
+  profile: CompiledValidationProfile;
   checker: RevocationChecker;
   prepared: PreparedCertificate;
   certificateIndex: number;
@@ -64,13 +64,13 @@ function summaryFor(
 }
 
 function acceptedEvidence(
-  policy: CompiledTrustPolicy,
+  profile: CompiledValidationProfile,
   goodByMechanism: Map<"crl" | "ocsp", EvidenceSummary>,
   single?: EvidenceSummary
 ): EvidenceSummary[] {
   if (single) return [single];
-  const required = requiredMechanisms(policy.revocation.requiredEvidence);
-  return policy.revocation.sourceOrder
+  const required = requiredMechanisms(profile.revocation.requiredEvidence);
+  return profile.revocation.sourceOrder
     .filter(
       (mechanism) =>
         required.includes(mechanism) && goodByMechanism.has(mechanism)
@@ -147,7 +147,7 @@ function findingsFor(
 }
 
 export async function collectCertificateEvidence({
-  policy,
+  profile,
   checker,
   prepared,
   certificateIndex,
@@ -158,11 +158,11 @@ export async function collectCertificateEvidence({
 }: EvidenceCollectorOptions): Promise<CertificateRevocation> {
   const attempts: EvidenceAttempt[] = [];
   const goodByMechanism = new Map<"crl" | "ocsp", EvidenceSummary>();
-  const required = requiredMechanisms(policy.revocation.requiredEvidence);
+  const required = requiredMechanisms(profile.revocation.requiredEvidence);
   let message =
     "No usable CRL or OCSP source is configured for this certificate";
 
-  for (const mechanism of policy.revocation.sourceOrder) {
+  for (const mechanism of profile.revocation.sourceOrder) {
     signal?.throwIfAborted();
     const urls = mechanism === "crl" ? prepared.crlUrls : prepared.ocspUrls;
     const loader = mechanism === "crl" ? crlLoader : ocspLoader;
@@ -229,13 +229,15 @@ export async function collectCertificateEvidence({
         const allRequiredGood = required.every((entry) =>
           goodByMechanism.has(entry)
         );
-        if (policy.revocation.requiredEvidence === "any" || allRequiredGood) {
+        if (profile.revocation.requiredEvidence === "any" || allRequiredGood) {
           return {
             status: "good",
             evidence: acceptedEvidence(
-              policy,
+              profile,
               goodByMechanism,
-              policy.revocation.requiredEvidence === "any" ? summary : undefined
+              profile.revocation.requiredEvidence === "any"
+                ? summary
+                : undefined
             ),
             findings: findingsFor(certificateIndex, attempts)
           };
@@ -256,7 +258,7 @@ export async function collectCertificateEvidence({
   }
 
   const decision = decideRevocationEvidence(
-    policy.revocation.requiredEvidence,
+    profile.revocation.requiredEvidence,
     attempts
   );
   const findings = findingsFor(certificateIndex, attempts);

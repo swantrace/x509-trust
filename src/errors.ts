@@ -1,21 +1,21 @@
-export type PolicyErrorCode = "INVALID_POLICY" | "UNSUPPORTED_POLICY";
+export type ProfileErrorCode = "INVALID_PROFILE" | "UNSUPPORTED_PROFILE";
 
-export class PolicyError extends Error {
-  readonly code: PolicyErrorCode;
+export class ProfileError extends Error {
+  readonly code: ProfileErrorCode;
 
-  constructor(code: PolicyErrorCode, message: string) {
+  constructor(code: ProfileErrorCode, message: string) {
     super(message);
-    this.name = "PolicyError";
+    this.name = "ProfileError";
     this.code = code;
   }
 }
 
-export function invalidPolicy(message: string): PolicyError {
-  return new PolicyError("INVALID_POLICY", message);
+export function invalidProfile(message: string): ProfileError {
+  return new ProfileError("INVALID_PROFILE", message);
 }
 
-export function unsupportedPolicy(message: string): PolicyError {
-  return new PolicyError("UNSUPPORTED_POLICY", message);
+export function unsupportedProfile(message: string): ProfileError {
+  return new ProfileError("UNSUPPORTED_PROFILE", message);
 }
 
 export class ResourceLimitError extends Error {

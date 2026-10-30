@@ -44,10 +44,10 @@ trust: including a root in the supplied chain does not make it trusted.
 ## API
 
 These types describe the public API and can be imported from `x509-trust`.
-The package also exports `createTrustValidator()`, `createTrustRegistry()`,
+The package also exports `createTrustValidator()`, `createValidationProfileRegistry()`,
 `createEvidenceProvider()`, `createMemoryCache()`,
-`getUriSubjectAlternativeNames()`, `compileTrustPolicy()`, `PolicyError`,
-`ResourceLimitError`, and the policy/capability/provider types. Worker APIs
+`getUriSubjectAlternativeNames()`, `compileValidationProfile()`, `ProfileError`,
+`ResourceLimitError`, and the profile/capability/provider types. Worker APIs
 are available only from `x509-trust/worker`.
 
 ```typescript
@@ -55,9 +55,8 @@ type CertificateInput = string | Uint8Array;
 
 interface TrustValidatorOptions {
   trustAnchors: readonly CertificateInput[];
-  policy?: TrustPolicyInput;
+  profile?: ValidationProfileInput;
   rules?: readonly TrustRuleRegistration[];
-  communityId?: string;
   loadCrl?: ((url: string, options?: CrlLoadOptions) => Promise<Uint8Array>) | false;
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
   provider?: EvidenceProvider;
@@ -153,9 +152,9 @@ type ValidationFailureCode =
   | "INVALID_CERTIFICATE_PATH"
   | "CERTIFICATE_REVOKED"
   | "REVOCATION_STATUS_UNKNOWN"
-  | "POLICY_REJECTED"
-  | "UNKNOWN_COMMUNITY"
-  | "UNKNOWN_POLICY_VERSION"
+  | "PROFILE_REJECTED"
+  | "UNKNOWN_PROFILE"
+  | "UNKNOWN_PROFILE_VERSION"
   | "RESOURCE_LIMIT_EXCEEDED";
 
 type KeyUsageName =
@@ -225,9 +224,8 @@ type ValidationResult =
       leafCertificate: ValidatedLeafCertificate;
       evidence: EvidenceSummary[];
       findings: CertificateFindings[];
-      policyId: string;
-      policyVersion: string | number;
-      communityId?: string;
+      profileId: string;
+      profileVersion: string | number;
     }
   | {
       valid: false;
@@ -236,9 +234,8 @@ type ValidationResult =
       certificateIndex?: number;
       evidence?: EvidenceSummary[];
       findings?: CertificateFindings[];
-      policyId?: string;
-      policyVersion?: string | number;
-      communityId?: string;
+      profileId?: string;
+      profileVersion?: string | number;
     };
 ```
 
@@ -248,7 +245,7 @@ that anchor's SHA-256 fingerprint. These fields let applications inspect the
 selected path or record which anchor established trust.
 
 `leafCertificate` is returned only after the path and every required revocation
-check succeed. It contains identity and key metadata, not policy or transport
+check succeed. It contains identity and key metadata, not profile or transport
 state. All byte fields are independent snapshots: changing them does not change
 the validator, its trust anchors, its cache, or a later result.
 
@@ -300,9 +297,9 @@ useful for parsing a certificate before validation.
 | `INVALID_CERTIFICATE_PATH`  | No valid path to a configured anchor was found, including signature or date failures. |
 | `CERTIFICATE_REVOKED`       | Authenticated evidence reports that a path certificate is revoked.                    |
 | `REVOCATION_STATUS_UNKNOWN` | Revocation status could not be established for a path certificate.                    |
-| `POLICY_REJECTED`           | A registered policy rule rejected an otherwise valid result.                          |
-| `UNKNOWN_COMMUNITY`         | A registry request named a community that is not locally registered.                  |
-| `UNKNOWN_POLICY_VERSION`    | The community exists but the requested policy version is not registered.              |
+| `PROFILE_REJECTED`           | A registered profile rule rejected an otherwise valid result.                         |
+| `UNKNOWN_PROFILE`           | A registry request named a profile that is not locally registered.                    |
+| `UNKNOWN_PROFILE_VERSION`   | The profile exists but the requested version is not registered.                       |
 | `RESOURCE_LIMIT_EXCEEDED`   | The evidence request queue, queue wait, or overall verification deadline was exceeded. |
 
 Revocation failures include `certificateIndex`, the zero-based position in the
@@ -311,9 +308,9 @@ validated path (`0` is the leaf). Use `code` for application decisions and
 
 Configuration errors are thrown rather than returned:
 
-- `PolicyError` with `INVALID_POLICY` for malformed policy, registry,
+- `ProfileError` with `INVALID_PROFILE` for malformed profile, registry,
   registration, or loader configuration.
-- `PolicyError` with `UNSUPPORTED_POLICY` for a mandatory capability or rule
+- `ProfileError` with `UNSUPPORTED_PROFILE` for a mandatory capability or rule
   name that has no implementation.
 - `TypeError` for invalid option values such as an invalid `checkDate`, an empty
   anchor set, or a non-positive deadline.
@@ -322,22 +319,22 @@ Configuration errors are thrown rather than returned:
 None of these thrown errors, and none of the failure codes above, can enter the
 success path.
 
-## Trust policies
+## Validation profiles
 
-`createTrustValidator({ trustAnchors, policy })` accepts an optional local policy
-object. Omitting it selects the built-in strict default. The policy is compiled,
-validated, deep-copied, and frozen when the validator is created; mutating the
-caller's object afterwards has no effect.
+`createTrustValidator({ trustAnchors, profile })` accepts an optional local
+validation profile. Omitting it selects the built-in strict default. The profile
+is compiled, validated, deep-copied, and frozen when the validator is created;
+mutating the caller's object afterwards has no effect.
 
 ```typescript
 const validator = createTrustValidator({
   trustAnchors: [rootCertificate],
-  policy: {
+  profile: {
     id: "example:strict",
     version: "2026-01",
     versionOrder: 1,
     source: {
-      uri: "https://example.org/pki/policy",
+      uri: "https://example.org/pki/profile",
       version: "3.1",
       effectiveDate: "2026-01-01"
     },
@@ -351,18 +348,18 @@ const validator = createTrustValidator({
 });
 ```
 
-Policy identity and provenance:
+Profile identity and provenance:
 
 - `version` accepts a number or a non-empty string.
 - Numeric versions default `versionOrder` to the version number.
 - String versions require an explicit positive-integer `versionOrder`; the
   registry uses it to select the latest version.
 - `source` accepts a legacy string or `{ uri, version?, effectiveDate? }`.
-- `requiredCapabilities` is validated against `POLICY_CAPABILITIES`. The
-  compiled policy also exposes the capabilities actually exercised as
+- `requiredCapabilities` is validated against `PROFILE_CAPABILITIES`. The
+  compiled profile also exposes the capabilities actually exercised as
   `capabilities`.
 
-The compiled policy has these defaults:
+The compiled profile has these defaults:
 
 | Field                              | Default        | Meaning |
 | ---------------------------------- | -------------- | ------- |
@@ -373,24 +370,24 @@ The compiled policy has these defaults:
 | `revocation.requireNextUpdate`     | `true`         | Evidence must have a freshness boundary. |
 | `revocation.clockSkewMs`           | `0`            | No clock-skew allowance. |
 
-### Policy files
+### Profile files
 
-Community policies live outside `src/`, under `policies/<community-id>/`:
+Profiles live outside `src/`, under `profiles/<profile-id>/`:
 
 ```text
-policies/
+profiles/
 ├── default/
-│   └── policy.json
-└── community-a/
-    ├── policy.json
+│   └── profile.json
+└── example/
+    ├── profile.json
     └── anchors/          # optional host-approved public trust bundle
 ```
 
-`policies/default/policy.json` mirrors the built-in strict default and is kept in
-sync by a test. The code constant `DEFAULT_TRUST_POLICY` remains authoritative.
-Policies are local reviewed data; the library never downloads a policy from a
+`profiles/default/profile.json` mirrors the built-in strict default and is kept in
+sync by a test. The code constant `DEFAULT_VALIDATION_PROFILE` remains authoritative.
+Profiles are local reviewed data; the library never downloads a profile from a
 request-supplied URI. `anchors/` may contain only public, host-approved
-certificates—never private keys. See [policies/README.md](policies/README.md).
+certificates—never private keys. See [profiles/README.md](profiles/README.md).
 
 `sourceOrder` controls collection order; `requiredEvidence` independently decides
 which mechanisms must produce a good result:
@@ -408,24 +405,24 @@ as soon as the requirement is satisfied, so this library does not claim that
 unqueried sources agree with the returned result. Unknown, unavailable,
 unauthenticated, expired, and unsupported evidence never establish good.
 
-Invalid policy objects throw a `PolicyError` with code `INVALID_POLICY`; a
-mandatory capability that is not implemented throws code `UNSUPPORTED_POLICY`.
-Disabling a loader that the policy requires is rejected at configuration time.
+Invalid profile objects throw a `ProfileError` with code `INVALID_PROFILE`; a
+mandatory capability that is not implemented throws code `UNSUPPORTED_PROFILE`.
+Disabling a loader that the profile requires is rejected at configuration time.
 
-### Policy rules
+### Profile rules
 
 Policies can require declarative checks on the validated result:
 
 ```typescript
-policy.rules = {
+profile.rules = {
   leafKeyUsage: ["digitalSignature"],
   leafExtendedKeyUsage: ["1.3.6.1.5.5.7.3.2"],
-  requiredLeafPolicyOids: ["1.2.3.4"],
+  requiredCertificatePolicyOids: ["1.2.3.4"],
   maxPathDepth: 3 // total certificates, including leaf and anchor
 };
 ```
 
-`requiredLeafPolicyOids` checks only the leaf certificate's policy extension. It
+`requiredCertificatePolicyOids` checks only the leaf certificate's policy extension. It
 does not claim or perform full RFC 5280 policy-tree processing. `maxPathDepth`
 counts the leaf and the selected trust anchor. All requirements are ANDed and
 empty arrays are rejected.
@@ -452,65 +449,83 @@ rule can reject a result, but cannot turn a path, signature, time, revoked, or
 unknown evidence failure into success. Exceptions and unrecognized rule results
 are failures. Rule facts are frozen copies derived from the validated path.
 
-## Community registry
+## Validation profile registry
 
-Use `createTrustRegistry()` when trust anchors and policies are selected by a
-locally registered community identifier instead of by request input:
+Use `createValidationProfileRegistry()` when trust anchors and profiles are selected by a
+locally registered `profileId` instead of by request input:
 
 ```typescript
-const registry = createTrustRegistry({
+const registry = createValidationProfileRegistry({
   loadCrl: readCrlFromStorage,
   loadOcsp: false
 });
 
 registry.register({
-  communityId: "community-a",
-  trustAnchors: [communityARoot],
-  policy: communityAPolicy,
-  rules: communityARules
+  trustAnchors: [profileARoot],
+  profile: profileA,
+  rules: profileARules
 });
 
 registry.register({
-  communityId: "community-b",
-  trustAnchors: [communityBRoot],
-  policy: {
-    ...communityBPolicy,
+  trustAnchors: [profileBRoot],
+  profile: {
+    ...profileB,
     version: 2
   }
 });
 
 const result = await registry.verify({
-  communityId: "community-a",
-  policyVersion: 2, // optional; the highest registered version otherwise
+  profileId: "profile-a",
+  profileVersion: 2, // optional; the highest registered version otherwise
   certificateChain: [clientCertificate, intermediateCertificate]
 });
 ```
 
-Communities are independent. The same certificate SAN can appear in two
-communities whose trust anchors differ, and each community can register several
-policy versions. The registry stores immutable anchors, compiled policies, and trusted rules.
-`verify()` input can select only a registered community and optional version; it
-cannot supply anchors, policies, or rules. Unknown communities return
-`UNKNOWN_COMMUNITY` and do not fall back to another community or to a default
-validator. Unknown versions return `UNKNOWN_POLICY_VERSION`.
+Profiles are independent. The same certificate SAN can appear in two profiles
+whose trust anchors differ, and each profile can register several versions. The
+registry stores immutable anchors, compiled profiles, and trusted rules.
+`verify()` input can select only a registered `profileId` and optional version; it
+cannot supply anchors, profiles, or rules. Unknown profiles return
+`UNKNOWN_PROFILE` and do not fall back to another profile or to a default
+validator. Unknown versions return `UNKNOWN_PROFILE_VERSION`.
 
-Registering the same community and policy version twice throws
-`INVALID_POLICY`; a failed registration is not partially stored. Each request
+Registering the same profile id and version twice throws
+`INVALID_PROFILE`; a failed registration is not partially stored. Each request
 selects its snapshot before awaiting validation, so registering a new version
-does not change an in-flight request. Successful registry results include
-`communityId`, `policyId`, and `policyVersion`.
+does not change an in-flight request. Successful registry results include `profileId` and `profileVersion`.
 
-## Validation policy and supported PKI
+### FHIR UDAP hosts
+
+The core package does not embed UDAP or external community vocabulary. A UDAP
+host maps its external framework identifier to a local `profileId` and registers
+approved anchors itself:
+
+```typescript
+const profileId = `udap:${frameworkIdentifier}`;
+
+registry.register({
+  trustAnchors: approvedUpstreamAnchors,
+  profile: { ...udapProfile, id: profileId }
+});
+
+await registry.verify({ profileId, certificateChain });
+```
+
+JWT `x5c`, `iss`/`aud`, OAuth, replay protection, and framework policy content
+remain application responsibilities. See
+[examples/udap/README.md](examples/udap/README.md).
+
+## Validation profiles and supported PKI
 
 The validator first builds and validates a path to a configured trust anchor,
 then checks revocation for the leaf and every intermediate. The configured
 anchor itself is not checked for revocation; applications control trust in it
 by adding or removing it from `trustAnchors` when creating a validator.
 
-For each certificate, the compiled policy selects mechanisms from
+For each certificate, the compiled profile selects mechanisms from
 `sourceOrder` and determines whether any, CRL, OCSP, or both must establish a
 good status. A later certificate's success cannot compensate for an earlier
-certificate's unknown or revoked status. This is a fail-closed policy:
+certificate's unknown or revoked status. This is a fail-closed profile:
 unavailable endpoints, missing endpoints, disabled mechanisms, invalid
 signatures, expired evidence, or unsupported evidence never count as proof that
 a certificate is not revoked. Disabling both CRL and OCSP does not bypass
@@ -529,7 +544,7 @@ OCSP permits omitting `nextUpdate`, but this verifier requires it to set an
 explicit freshness boundary. This is a library restriction, not an OCSP
 requirement. Both CRL and OCSP evidence must have a usable `nextUpdate`.
 
-Before using the library with a trust community or CA, confirm that its PKI
+Before using the library with a validation profile or CA, confirm that its PKI
 publishes evidence within this supported scope. Rejecting unsupported evidence
 avoids accepting an unverified status, but can also reject otherwise valid
 certificates.
@@ -538,7 +553,7 @@ certificates.
 
 By default each validator creates its own evidence provider and downloads with
 conservative finite limits. To enforce application-wide limits across several
-validators or communities, create one provider explicitly and pass it to each
+validators or profiles, create one provider explicitly and pass it to each
 validator or to the registry:
 
 ```typescript
@@ -625,8 +640,8 @@ await engine.close({ force: true });
 Only DER bytes and JSON-compatible DTOs cross the thread boundary. HTTP,
 bounded request scheduling, single-flight, caching, diagnostics, registered
 rules, and cancellation remain on the main thread. The pool is long-lived and
-can be shared by validators and registry communities; it is not created per
-verification or per community.
+can be shared by validators and registry profiles; it is not created per
+verification or per profile.
 
 Worker queue overflow and task timeouts return `RESOURCE_LIMIT_EXCEEDED`.
 Aborting a task terminates its worker; the pool replaces it, and subsequent
@@ -687,11 +702,11 @@ mode remains a responsiveness tradeoff, not a throughput default.
 
 After the path validates, the leaf and every intermediate start revocation
 pipelines concurrently. Within each certificate, mechanisms and their URLs keep
-the policy's ordered, sequential fallback; there is no cross-certificate barrier
+the profile's ordered, sequential fallback; there is no cross-certificate barrier
 before validating a response or trying the next source.
 
 Overall success still requires every non-anchor certificate to satisfy the
-policy. The validator races only an authenticated `revoked` result against
+profile. The validator races only an authenticated `revoked` result against
 completion of all pipelines:
 
 - Once an authenticated revoked result is confirmed, `verify()` returns it
@@ -907,7 +922,7 @@ not used or packed.
 
 | Rust-branch export | This package |
 | ------------------ | ------------ |
-| `nativeValidateCertificatePath()` | `createTrustValidator().verify()` or `createTrustRegistry().verify()` |
+| `nativeValidateCertificatePath()` | `createTrustValidator().verify()` or `createValidationProfileRegistry().verify()` |
 | `nativeValidateCrl()` / `nativeValidateOcsp()` | Internal DER engine steps; callers use `verify()` |
 | `nativeCreateOcspRequest()` | Internal engine step; custom OCSP loaders receive `requestDer` context from the provider |
 | `nativeCertificateDer()` | Not public; pass PEM or DER `CertificateInput` to the validator |
@@ -937,14 +952,40 @@ The source tree is grouped by responsibility:
 
 - `src/engine/` — PKI.js-backed DER/DTO engine, path/CRL/OCSP, certificate facts,
   CRL index cache.
-- `src/policy/` — policy schema/compiler, registered rules, community registry.
+- `src/profile/` — profile schema/compiler, registered rules, registry.
 - `src/evidence/` — evidence decisions, concurrent collection, HTTP loaders,
   provider scheduling/single-flight, cache, revocation checker.
 - `src/validator/` — public validation orchestration and result assembly.
 - `src/workers/` — Piscina worker engine and DER/DTO worker task protocol.
-- `policies/` — local policy data; one directory per community plus `default/`.
+- `profiles/` — local profile data; one directory per profile plus `default/`.
+- `examples/udap/` — host-side mapping example; not part of the package.
 - `src/index.ts`, `src/worker.ts` — public entry points.
 - Shared errors/diagnostics remain at `src/`.
+
+## Migrating from the 0.4 policy/community API
+
+This is a breaking rename; there are no compatibility aliases.
+
+| Old | New |
+| --- | --- |
+| `TrustPolicyInput` / `CompiledTrustPolicy` | `ValidationProfileInput` / `CompiledValidationProfile` |
+| `compileTrustPolicy()` / `DEFAULT_TRUST_POLICY` | `compileValidationProfile()` / `DEFAULT_VALIDATION_PROFILE` |
+| `policySetId` | `profileId` (from `profile.id`) |
+| `policyId` / `policyVersion` result fields | `profileId` / `profileVersion` |
+| `TrustRegistry` / `createTrustRegistry()` | `ValidationProfileRegistry` / `createValidationProfileRegistry()` |
+| `UNKNOWN_COMMUNITY` / `UNKNOWN_POLICY_SET` / `UNKNOWN_POLICY_VERSION` | `UNKNOWN_PROFILE` / `UNKNOWN_PROFILE_VERSION` |
+| `POLICY_REJECTED` | `PROFILE_REJECTED` |
+| `PolicyError` / `INVALID_POLICY` / `UNSUPPORTED_POLICY` | `ProfileError` / `INVALID_PROFILE` / `UNSUPPORTED_PROFILE` |
+| `policies/` | `profiles/` |
+
+Current registration no longer takes a separate set/community identifier:
+
+```typescript
+// before
+registry.register({ profileId: "a", trustAnchors, policy });
+// after: profile.id is the registry key
+registry.register({ trustAnchors, profile: { ...profile, id: "a" } });
+```
 
 ## Package and deployment contract
 
@@ -957,7 +998,7 @@ The source tree is grouped by responsibility:
   resolved relative to the installed package, including when installed from a
   tarball.
 - `npm pack` contains `dist`, `package.json`, and `README.md`; it excludes
-  `.dsh`, PDFs, tests, benchmark sources, fixtures, policies, native artifacts,
+  `.dsh`, PDFs, tests, benchmark sources, fixtures, profiles, native artifacts,
   private keys, and stale build output. Builds remove `dist` first so stale files
-  cannot be packed. Community policies remain host-owned data.
+  cannot be packed. Profiles remain host-owned data.
 - No database, UI framework, or web server is part of this package.

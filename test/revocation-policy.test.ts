@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   createTrustValidator,
-  PolicyError,
+  ProfileError,
   type RequiredEvidence,
   type RevocationMechanism,
-  type TrustPolicyInput
+  type ValidationProfileInput
 } from "../src/index.ts";
 import {
   createCrl,
@@ -57,7 +57,7 @@ const chainInput = [chain.leaf.der, chain.intermediate.der];
 function policy(
   requiredEvidence: RequiredEvidence,
   sourceOrder: RevocationMechanism[]
-): TrustPolicyInput {
+): ValidationProfileInput {
   return {
     id: `test:${requiredEvidence}`,
     version: 1,
@@ -86,7 +86,7 @@ function validators({
 }) {
   return createTrustValidator({
     trustAnchors: [chain.root.der],
-    policy: policy(requiredEvidence, sourceOrder),
+    profile: policy(requiredEvidence, sourceOrder),
     now,
     loadCrl:
       loadCrl === false
@@ -226,12 +226,12 @@ test("registered policy rejects a disabled required loader at configuration time
     () =>
       createTrustValidator({
         trustAnchors: [chain.root.der],
-        policy: policy("crl", ["ocsp", "crl"]),
+        profile: policy("crl", ["ocsp", "crl"]),
         loadCrl: false
       }),
     (error: unknown) => {
-      assert.ok(error instanceof PolicyError);
-      assert.equal(error.code, "INVALID_POLICY");
+      assert.ok(error instanceof ProfileError);
+      assert.equal(error.code, "INVALID_PROFILE");
       return true;
     }
   );
@@ -239,12 +239,12 @@ test("registered policy rejects a disabled required loader at configuration time
     () =>
       createTrustValidator({
         trustAnchors: [chain.root.der],
-        policy: policy("ocsp", ["ocsp"]),
+        profile: policy("ocsp", ["ocsp"]),
         loadOcsp: false
       }),
     (error: unknown) => {
-      assert.ok(error instanceof PolicyError);
-      assert.equal(error.code, "INVALID_POLICY");
+      assert.ok(error instanceof ProfileError);
+      assert.equal(error.code, "INVALID_PROFILE");
       return true;
     }
   );

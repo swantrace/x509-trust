@@ -9,7 +9,7 @@ import {
 import type {
   RequiredEvidence,
   RevocationMechanism
-} from "../src/policy/policy.ts";
+} from "../src/profile/profile.ts";
 
 function summary(
   mechanism: RevocationMechanism,

@@ -1,7 +1,7 @@
 import type {
   RequiredEvidence,
   RevocationMechanism
-} from "../policy/policy.ts";
+} from "../profile/profile.ts";
 
 export interface EvidenceSummary {
   certificateIndex: number;

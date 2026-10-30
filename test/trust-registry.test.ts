@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
 import { test } from "node:test";
 import {
-  createTrustRegistry,
-  PolicyError,
+  createValidationProfileRegistry,
+  ProfileError,
   type RequiredEvidence,
-  type TrustPolicyInput,
   type TrustRuleContext,
-  type TrustRuleRegistration
+  type TrustRuleRegistration,
+  type ValidationProfileInput
 } from "../src/index.ts";
 import type { SyntheticCertificate } from "./helpers/synthetic-pki.ts";
 import {
@@ -61,10 +61,10 @@ function policyFor(
     requiredEvidence = "crl"
   }: {
     version?: number;
-    rules?: TrustPolicyInput["rules"];
+    rules?: ValidationProfileInput["rules"];
     requiredEvidence?: RequiredEvidence;
   } = {}
-): TrustPolicyInput {
+): ValidationProfileInput {
   return {
     id,
     version,
@@ -80,15 +80,15 @@ function policyFor(
 
 function makeRegistry(
   registrations: Array<{
-    communityId: string;
+    profileId?: string;
     chain: typeof base;
-    policy?: TrustPolicyInput;
+    profile?: ValidationProfileInput;
     rules?: readonly TrustRuleRegistration[];
   }>,
   loadCrl?: (url: string) => Promise<Uint8Array>
 ) {
   const calls = { crl: [] as string[] };
-  const registry = createTrustRegistry({
+  const registry = createValidationProfileRegistry({
     now: () => checkDate.getTime(),
     loadOcsp: false,
     loadCrl:
@@ -101,11 +101,15 @@ function makeRegistry(
       })
   });
   for (const registration of registrations) {
+    const profile =
+      registration.profile ??
+      policyFor(`${registration.profileId ?? "default"}:policy`);
     registry.register({
-      communityId: registration.communityId,
+      profile:
+        registration.profileId === undefined
+          ? profile
+          : { ...profile, id: registration.profileId },
       trustAnchors: [registration.chain.root.der],
-      policy:
-        registration.policy ?? policyFor(`${registration.communityId}:policy`),
       rules: registration.rules
     });
   }
@@ -116,17 +120,17 @@ function inputFor(chain: typeof base, leaf: SyntheticCertificate = chain.leaf) {
   return [leaf.der, chain.intermediate.der];
 }
 
-async function ruleCommunity(
-  communityId: string,
+async function registryWithRule(
+  profileId: string,
   rule: TrustRuleRegistration,
-  policyOverrides: Partial<TrustPolicyInput> = {}
+  policyOverrides: Partial<ValidationProfileInput> = {}
 ) {
   const { registry } = makeRegistry([
     {
-      communityId,
+      profileId,
       chain: base,
-      policy: {
-        ...policyFor(`${communityId}:policy`),
+      profile: {
+        ...policyFor(`${profileId}:policy`),
         ...policyOverrides,
         rules: {
           ...policyOverrides.rules,
@@ -139,23 +143,23 @@ async function ruleCommunity(
   return registry;
 }
 
-test("selects anchors per community even when leaves share a SAN", async () => {
+test("selects anchors per policy-set even when leaves share a SAN", async () => {
   const { registry } = makeRegistry([
-    { communityId: "community-a", chain: base },
-    { communityId: "community-b", chain: second }
+    { profileId: "policy-set-a", chain: base },
+    { profileId: "policy-set-b", chain: second }
   ]);
   const first = await registry.verify({
-    communityId: "community-a",
+    profileId: "policy-set-a",
     certificateChain: inputFor(base)
   });
   const other = await registry.verify({
-    communityId: "community-b",
+    profileId: "policy-set-b",
     certificateChain: inputFor(second)
   });
   assert.equal(first.valid, true);
   assert.equal(other.valid, true);
-  assert.equal(first.valid && first.communityId, "community-a");
-  assert.equal(other.valid && other.communityId, "community-b");
+  assert.equal(first.valid && first.profileId, "policy-set-a");
+  assert.equal(other.valid && other.profileId, "policy-set-b");
   assert.deepEqual(
     first.valid && first.leafCertificate.uriSubjectAlternativeNames,
     [sameSan]
@@ -166,53 +170,52 @@ test("selects anchors per community even when leaves share a SAN", async () => {
   );
 
   const cross = await registry.verify({
-    communityId: "community-a",
+    profileId: "policy-set-a",
     certificateChain: inputFor(second)
   });
   assert.equal(cross.valid, false);
   assert.equal(cross.code, "INVALID_CERTIFICATE_PATH");
 });
 
-test("unknown communities and versions fail without any evidence I/O", async () => {
+test("unknown profiles and versions fail without any evidence I/O", async () => {
   const { registry, calls } = makeRegistry([
-    { communityId: "known", chain: base }
+    { profileId: "known", chain: base }
   ]);
   const unknown = await registry.verify({
-    communityId: "unknown",
+    profileId: "unknown",
     certificateChain: inputFor(base)
   });
   assert.equal(unknown.valid, false);
-  assert.equal(unknown.code, "UNKNOWN_COMMUNITY");
+  assert.equal(unknown.code, "UNKNOWN_PROFILE");
   assert.equal(calls.crl.length, 0);
 
   const unknownVersion = await registry.verify({
-    communityId: "known",
-    policyVersion: 99,
+    profileId: "known",
+    profileVersion: 99,
     certificateChain: inputFor(base)
   });
   assert.equal(unknownVersion.valid, false);
-  assert.equal(unknownVersion.code, "UNKNOWN_POLICY_VERSION");
+  assert.equal(unknownVersion.code, "UNKNOWN_PROFILE_VERSION");
   assert.equal(calls.crl.length, 0);
 });
 
 test("rejects duplicate policy versions and does not partially register failures", async () => {
   const { registry } = makeRegistry([
     {
-      communityId: "versions",
+      profileId: "versions",
       chain: base,
-      policy: policyFor("v1", { version: 1 })
+      profile: policyFor("v1", { version: 1 })
     }
   ]);
   assert.throws(
     () =>
       registry.register({
-        communityId: "versions",
         trustAnchors: [base.root.der],
-        policy: policyFor("v1-again", { version: 1 })
+        profile: { ...policyFor("v1-again", { version: 1 }), id: "versions" }
       }),
     (error: unknown) => {
-      assert.ok(error instanceof PolicyError);
-      assert.equal(error.code, "INVALID_POLICY");
+      assert.ok(error instanceof ProfileError);
+      assert.equal(error.code, "INVALID_PROFILE");
       return true;
     }
   );
@@ -220,58 +223,57 @@ test("rejects duplicate policy versions and does not partially register failures
   assert.throws(
     () =>
       registry.register({
-        communityId: "broken",
         trustAnchors: [base.root.der],
-        policy: {
+        profile: {
           ...policyFor("broken"),
           rules: { requiredRuleNames: ["missing-rule"] }
         }
       }),
     (error: unknown) => {
-      assert.ok(error instanceof PolicyError);
-      assert.equal(error.code, "UNSUPPORTED_POLICY");
+      assert.ok(error instanceof ProfileError);
+      assert.equal(error.code, "UNSUPPORTED_PROFILE");
       return true;
     }
   );
   const broken = await registry.verify({
-    communityId: "broken",
+    profileId: "broken",
     certificateChain: inputFor(base)
   });
   assert.equal(broken.valid, false);
-  assert.equal(broken.code, "UNKNOWN_COMMUNITY");
+  assert.equal(broken.code, "UNKNOWN_PROFILE");
 });
 
 test("selects the latest policy version unless an exact version is requested", async () => {
   const { registry } = makeRegistry([
     {
-      communityId: "versioned",
+      profileId: "versioned",
       chain: base,
-      policy: policyFor("versioned:v1", { version: 1 })
+      profile: policyFor("versioned:v1", { version: 1 })
     },
     {
-      communityId: "versioned",
+      profileId: "versioned",
       chain: base,
-      policy: policyFor("versioned:v2", {
+      profile: policyFor("versioned:v2", {
         version: 2,
         rules: { leafExtendedKeyUsage: ["1.3.6.1.5.5.7.3.9"] }
       })
     }
   ]);
   const latest = await registry.verify({
-    communityId: "versioned",
+    profileId: "versioned",
     certificateChain: inputFor(base)
   });
   assert.equal(latest.valid, false);
-  assert.equal(latest.code, "POLICY_REJECTED");
-  assert.equal(latest.policyVersion, 2);
+  assert.equal(latest.code, "PROFILE_REJECTED");
+  assert.equal(latest.profileVersion, 2);
 
   const pinned = await registry.verify({
-    communityId: "versioned",
-    policyVersion: 1,
+    profileId: "versioned",
+    profileVersion: 1,
     certificateChain: inputFor(base)
   });
   assert.equal(pinned.valid, true);
-  assert.equal(pinned.valid && pinned.policyVersion, 1);
+  assert.equal(pinned.valid && pinned.profileVersion, 1);
 });
 
 test("a version registered during an in-flight request does not affect that request", async () => {
@@ -286,9 +288,9 @@ test("a version registered during an in-flight request does not affect that requ
   const { registry } = makeRegistry(
     [
       {
-        communityId: "in-flight",
+        profileId: "in-flight",
         chain: base,
-        policy: policyFor("in-flight:v1", { version: 1 })
+        profile: policyFor("in-flight:v1", { version: 1 })
       }
     ],
     async (url) => {
@@ -302,22 +304,24 @@ test("a version registered during an in-flight request does not affect that requ
     }
   );
   const pending = registry.verify({
-    communityId: "in-flight",
+    profileId: "in-flight",
     certificateChain: inputFor(base)
   });
   await startedSignal;
   registry.register({
-    communityId: "in-flight",
     trustAnchors: [base.root.der],
-    policy: policyFor("in-flight:v2", {
-      version: 2,
-      rules: { leafExtendedKeyUsage: ["1.3.6.1.5.5.7.3.9"] }
-    })
+    profile: {
+      ...policyFor("in-flight:v2", {
+        version: 2,
+        rules: { leafExtendedKeyUsage: ["1.3.6.1.5.5.7.3.9"] }
+      }),
+      id: "in-flight"
+    }
   });
   release();
   const result = await pending;
   assert.equal(result.valid, true);
-  assert.equal(result.valid && result.policyVersion, 1);
+  assert.equal(result.valid && result.profileVersion, 1);
 });
 
 test("registration snapshots resist later caller mutation", async () => {
@@ -325,38 +329,37 @@ test("registration snapshots resist later caller mutation", async () => {
   const policy = policyFor("mutable");
   const { registry } = makeRegistry([]);
   registry.register({
-    communityId: "mutable",
     trustAnchors: [anchor],
-    policy
+    profile: { ...policy, id: "mutable" }
   });
   anchor.fill(0);
   (policy.revocation as { sourceOrder: string[] }).sourceOrder = ["ocsp"];
   policy.id = "changed";
   const result = await registry.verify({
-    communityId: "mutable",
+    profileId: "mutable",
     certificateChain: inputFor(base)
   });
   assert.equal(result.valid, true);
-  assert.equal(result.valid && result.policyId, "mutable");
+  assert.equal(result.valid && result.profileId, "mutable");
 });
 
 test("built-in leaf KU, EKU, policy OID and path depth rules run after core validation", async () => {
   const { registry } = makeRegistry([
     {
-      communityId: "rules",
+      profileId: "rules",
       chain: base,
-      policy: policyFor("rules:policy", {
+      profile: policyFor("rules:policy", {
         rules: {
           leafKeyUsage: ["digitalSignature"],
           leafExtendedKeyUsage: ["1.3.6.1.5.5.7.3.2"],
-          requiredLeafPolicyOids: ["1.2.3.4"],
+          requiredCertificatePolicyOids: ["1.2.3.4"],
           maxPathDepth: 3
         }
       })
     }
   ]);
   const success = await registry.verify({
-    communityId: "rules",
+    profileId: "rules",
     certificateChain: inputFor(base)
   });
   assert.equal(success.valid, true);
@@ -366,21 +369,21 @@ test("built-in leaf KU, EKU, policy OID and path depth rules run after core vali
     keyUsageBits: [0x20]
   });
   const wrongUsage = await registry.verify({
-    communityId: "rules",
+    profileId: "rules",
     certificateChain: inputFor(base, wrongKeyUsage)
   });
   assert.equal(wrongUsage.valid, false);
-  assert.equal(wrongUsage.code, "POLICY_REJECTED");
+  assert.equal(wrongUsage.code, "PROFILE_REJECTED");
 
   const noEku = await createLeafForChain(base, {
     crlUrls: [baseLeafCrlUrl]
   });
   const missingEku = await registry.verify({
-    communityId: "rules",
+    profileId: "rules",
     certificateChain: inputFor(base, noEku)
   });
   assert.equal(missingEku.valid, false);
-  assert.equal(missingEku.code, "POLICY_REJECTED");
+  assert.equal(missingEku.code, "PROFILE_REJECTED");
 
   const leafWithoutPolicy = await createLeafForChain(base, {
     crlUrls: [baseLeafCrlUrl],
@@ -388,50 +391,50 @@ test("built-in leaf KU, EKU, policy OID and path depth rules run after core vali
   });
   const { registry: policyRegistry } = makeRegistry([
     {
-      communityId: "leaf-policy",
+      profileId: "leaf-policy",
       chain: base,
-      policy: policyFor("leaf-policy:policy", {
-        rules: { requiredLeafPolicyOids: ["2.9.9.9"] }
+      profile: policyFor("leaf-policy:policy", {
+        rules: { requiredCertificatePolicyOids: ["2.9.9.9"] }
       })
     }
   ]);
   const intermediateOnly = await policyRegistry.verify({
-    communityId: "leaf-policy",
+    profileId: "leaf-policy",
     certificateChain: inputFor(base, leafWithoutPolicy)
   });
   assert.equal(intermediateOnly.valid, false);
-  assert.equal(intermediateOnly.code, "POLICY_REJECTED");
+  assert.equal(intermediateOnly.code, "PROFILE_REJECTED");
 
   const leafWithPolicy = await createLeafForChain(base, {
     crlUrls: [baseLeafCrlUrl],
     certificatePolicyOids: ["2.9.9.9"]
   });
   const leafPolicy = await policyRegistry.verify({
-    communityId: "leaf-policy",
+    profileId: "leaf-policy",
     certificateChain: inputFor(base, leafWithPolicy)
   });
   assert.equal(leafPolicy.valid, true);
 
   const { registry: depthRegistry } = makeRegistry([
     {
-      communityId: "depth",
+      profileId: "depth",
       chain: base,
-      policy: policyFor("depth:policy", {
+      profile: policyFor("depth:policy", {
         rules: { maxPathDepth: 2 }
       })
     }
   ]);
   const tooDeep = await depthRegistry.verify({
-    communityId: "depth",
+    profileId: "depth",
     certificateChain: inputFor(base)
   });
   assert.equal(tooDeep.valid, false);
-  assert.equal(tooDeep.code, "POLICY_REJECTED");
+  assert.equal(tooDeep.code, "PROFILE_REJECTED");
 });
 
 test("registered custom rules receive trusted facts and fail closed", async () => {
   let observed: TrustRuleContext | undefined;
-  const capture = await ruleCommunity("custom-ok", {
+  const capture = await registryWithRule("custom-ok", {
     name: "capture",
     check(context) {
       observed = context;
@@ -439,11 +442,11 @@ test("registered custom rules receive trusted facts and fail closed", async () =
     }
   });
   const success = await capture.verify({
-    communityId: "custom-ok",
+    profileId: "custom-ok",
     certificateChain: inputFor(base)
   });
   assert.equal(success.valid, true);
-  assert.equal(observed?.communityId, "custom-ok");
+  assert.equal(observed?.profileId, "custom-ok");
   assert.equal(observed?.certificatePath.length, 3);
   assert.deepEqual(observed?.leaf.uriSubjectAlternativeNames, [sameSan]);
   assert.equal(
@@ -451,44 +454,44 @@ test("registered custom rules receive trusted facts and fail closed", async () =
     new X509Certificate(base.leaf.der).fingerprint256
   );
 
-  const denied = await ruleCommunity("custom-deny", {
+  const denied = await registryWithRule("custom-deny", {
     name: "deny",
     check: () => ({ ok: false, message: "denied by registered rule" })
   });
   const deniedResult = await denied.verify({
-    communityId: "custom-deny",
+    profileId: "custom-deny",
     certificateChain: inputFor(base)
   });
   assert.equal(deniedResult.valid, false);
-  assert.equal(deniedResult.code, "POLICY_REJECTED");
+  assert.equal(deniedResult.code, "PROFILE_REJECTED");
   assert.equal(
     deniedResult.valid === false && deniedResult.message,
     "denied by registered rule"
   );
 
-  const unrecognized = await ruleCommunity("custom-bad", {
+  const unrecognized = await registryWithRule("custom-bad", {
     name: "bad",
     check: (() => ({ valid: true })) as never
   });
   const badResult = await unrecognized.verify({
-    communityId: "custom-bad",
+    profileId: "custom-bad",
     certificateChain: inputFor(base)
   });
   assert.equal(badResult.valid, false);
-  assert.equal(badResult.code, "POLICY_REJECTED");
+  assert.equal(badResult.code, "PROFILE_REJECTED");
 
-  const throwing = await ruleCommunity("custom-throw", {
+  const throwing = await registryWithRule("custom-throw", {
     name: "throw",
     check: () => {
       throw new Error("rule failure");
     }
   });
   const throwResult = await throwing.verify({
-    communityId: "custom-throw",
+    profileId: "custom-throw",
     certificateChain: inputFor(base)
   });
   assert.equal(throwResult.valid, false);
-  assert.equal(throwResult.code, "POLICY_REJECTED");
+  assert.equal(throwResult.code, "PROFILE_REJECTED");
 });
 
 test("rules cannot override core path or revocation failures", async () => {
@@ -498,9 +501,9 @@ test("rules cannot override core path or revocation failures", async () => {
   };
   const { registry } = makeRegistry([
     {
-      communityId: "core",
+      profileId: "core",
       chain: base,
-      policy: {
+      profile: {
         ...policyFor("core:policy"),
         rules: { requiredRuleNames: [rule.name] }
       },
@@ -508,7 +511,7 @@ test("rules cannot override core path or revocation failures", async () => {
     }
   ]);
   const wrongAnchor = await registry.verify({
-    communityId: "core",
+    profileId: "core",
     certificateChain: inputFor(second)
   });
   assert.equal(wrongAnchor.valid, false);
@@ -521,9 +524,9 @@ test("rules cannot override core path or revocation failures", async () => {
   const { registry: revokedRegistry } = makeRegistry(
     [
       {
-        communityId: "core-revoked",
+        profileId: "core-revoked",
         chain: base,
-        policy: {
+        profile: {
           ...policyFor("core-revoked:policy"),
           rules: { requiredRuleNames: [rule.name] }
         },
@@ -538,7 +541,7 @@ test("rules cannot override core path or revocation failures", async () => {
     }
   );
   const revoked = await revokedRegistry.verify({
-    communityId: "core-revoked",
+    profileId: "core-revoked",
     certificateChain: inputFor(base, revokedLeaf)
   });
   assert.equal(revoked.valid, false);
@@ -550,7 +553,7 @@ test("selects string policy versions using explicit versionOrder", async () => {
     id: "versions:string:v1",
     version: "2025-01",
     versionOrder: 10,
-    source: { uri: "https://community.example/policy/2025-01" },
+    source: { uri: "https://policy-set.example/policy/2025-01" },
     anchorSetId: "synthetic:root",
     revocation: {
       requiredEvidence: "crl" as const,
@@ -561,7 +564,7 @@ test("selects string policy versions using explicit versionOrder", async () => {
     id: "versions:string:v2",
     version: "2026-01",
     versionOrder: 20,
-    source: { uri: "https://community.example/policy/2026-01" },
+    source: { uri: "https://policy-set.example/policy/2026-01" },
     anchorSetId: "synthetic:root",
     revocation: {
       requiredEvidence: "crl" as const,
@@ -570,43 +573,43 @@ test("selects string policy versions using explicit versionOrder", async () => {
     rules: { leafExtendedKeyUsage: ["1.3.6.1.5.5.7.3.9"] }
   };
   const { registry } = makeRegistry([
-    { communityId: "string-versions", chain: base, policy: v1 },
-    { communityId: "string-versions", chain: base, policy: v2 }
+    { profileId: "string-versions", chain: base, profile: v1 },
+    { profileId: "string-versions", chain: base, profile: v2 }
   ]);
   const latest = await registry.verify({
-    communityId: "string-versions",
+    profileId: "string-versions",
     certificateChain: inputFor(base)
   });
   assert.equal(latest.valid, false);
-  assert.equal(latest.code, "POLICY_REJECTED");
-  assert.equal(latest.policyVersion, "2026-01");
+  assert.equal(latest.code, "PROFILE_REJECTED");
+  assert.equal(latest.profileVersion, "2026-01");
 
   const pinned = await registry.verify({
-    communityId: "string-versions",
-    policyVersion: "2025-01",
+    profileId: "string-versions",
+    profileVersion: "2025-01",
     certificateChain: inputFor(base)
   });
   assert.equal(pinned.valid, true);
-  assert.equal(pinned.valid && pinned.policyVersion, "2025-01");
+  assert.equal(pinned.valid && pinned.profileVersion, "2025-01");
 
   assert.throws(
     () =>
       registry.register({
-        communityId: "string-versions",
+        profileId: "string-versions",
         trustAnchors: [base.root.der],
-        policy: { ...v1, version: "2025-02", versionOrder: 10 }
+        profile: { ...v1, version: "2025-02", versionOrder: 10 }
       }),
     (error: unknown) => {
-      assert.ok(error instanceof PolicyError);
-      assert.equal(error.code, "INVALID_POLICY");
+      assert.ok(error instanceof ProfileError);
+      assert.equal(error.code, "INVALID_PROFILE");
       return true;
     }
   );
   const missing = await registry.verify({
-    communityId: "string-versions",
-    policyVersion: "2024-01",
+    profileId: "string-versions",
+    profileVersion: "2024-01",
     certificateChain: inputFor(base)
   });
   assert.equal(missing.valid, false);
-  assert.equal(missing.code, "UNKNOWN_POLICY_VERSION");
+  assert.equal(missing.code, "UNKNOWN_PROFILE_VERSION");
 });

@@ -7,7 +7,7 @@ import {
 } from "../engine/crl-index-cache.ts";
 import type { ValidatedLeafCertificate } from "../engine/leaf-certificate.ts";
 import { createInlinePkiEngine, type PkiEngine } from "../engine/pki-engine.ts";
-import { invalidPolicy, ResourceLimitError } from "../errors.ts";
+import { invalidProfile, ResourceLimitError } from "../errors.ts";
 import type { CacheStore } from "../evidence/cache.ts";
 import {
   type CertificateFindings,
@@ -26,22 +26,21 @@ import {
 } from "../evidence/http-loaders.ts";
 import { createRevocationChecker } from "../evidence/revocation-checker.ts";
 import {
-  compileTrustPolicy,
-  DEFAULT_TRUST_POLICY,
-  type PolicyVersion,
-  type TrustPolicyInput
-} from "../policy/policy.ts";
+  compileValidationProfile,
+  DEFAULT_VALIDATION_PROFILE,
+  type ProfileVersion,
+  type ValidationProfileInput
+} from "../profile/profile.ts";
 import {
   applyTrustRules,
   normalizeRuleRegistrations,
   type TrustRuleRegistration
-} from "../policy/rules.ts";
+} from "../profile/rules.ts";
 
 export interface TrustValidatorOptions {
   trustAnchors: readonly CertificateInput[];
-  policy?: TrustPolicyInput;
+  profile?: ValidationProfileInput;
   rules?: readonly TrustRuleRegistration[];
-  communityId?: string;
   loadCrl?:
     | ((url: string, options?: CrlLoadOptions) => Promise<Uint8Array>)
     | false;
@@ -69,9 +68,9 @@ export type ValidationFailureCode =
   | "INVALID_CERTIFICATE_PATH"
   | "CERTIFICATE_REVOKED"
   | "REVOCATION_STATUS_UNKNOWN"
-  | "POLICY_REJECTED"
-  | "UNKNOWN_COMMUNITY"
-  | "UNKNOWN_POLICY_VERSION"
+  | "PROFILE_REJECTED"
+  | "UNKNOWN_PROFILE"
+  | "UNKNOWN_PROFILE_VERSION"
   | "RESOURCE_LIMIT_EXCEEDED";
 
 export type ValidationResult =
@@ -82,9 +81,8 @@ export type ValidationResult =
       leafCertificate: ValidatedLeafCertificate;
       evidence: EvidenceSummary[];
       findings: CertificateFindings[];
-      policyId: string;
-      policyVersion: PolicyVersion;
-      communityId?: string;
+      profileId: string;
+      profileVersion: ProfileVersion;
     }
   | {
       valid: false;
@@ -93,9 +91,8 @@ export type ValidationResult =
       certificateIndex?: number;
       evidence?: EvidenceSummary[];
       findings?: CertificateFindings[];
-      policyId?: string;
-      policyVersion?: PolicyVersion;
-      communityId?: string;
+      profileId?: string;
+      profileVersion?: ProfileVersion;
     };
 
 export interface TrustValidator {
@@ -111,9 +108,8 @@ function abortError(): DOMException {
 
 export function createTrustValidator({
   trustAnchors,
-  policy: policyInput,
+  profile: profileInput,
   rules: ruleInput,
-  communityId,
   loadCrl,
   loadOcsp,
   provider,
@@ -130,16 +126,11 @@ export function createTrustValidator({
   if (trustAnchors.length === 0) {
     throw new TypeError("trustAnchors must contain at least one certificate");
   }
-  if (
-    communityId !== undefined &&
-    (typeof communityId !== "string" || communityId.trim() === "")
-  ) {
-    throw invalidPolicy("communityId must be a non-empty string");
-  }
   const rules = normalizeRuleRegistrations(ruleInput);
-  const policy = compileTrustPolicy(policyInput ?? DEFAULT_TRUST_POLICY, {
-    registeredRuleNames: rules.map((rule) => rule.name)
-  });
+  const profile = compileValidationProfile(
+    profileInput ?? DEFAULT_VALIDATION_PROFILE,
+    { registeredRuleNames: rules.map((rule) => rule.name) }
+  );
   const anchors = trustAnchors.map((input) =>
     Uint8Array.from(new X509Certificate(input).raw)
   );
@@ -147,7 +138,9 @@ export function createTrustValidator({
     throw new TypeError("deadlineMs must be a positive integer");
   }
   if (provider && (loadCrl !== undefined || loadOcsp !== undefined)) {
-    throw invalidPolicy("provider cannot be combined with loadCrl or loadOcsp");
+    throw invalidProfile(
+      "provider cannot be combined with loadCrl or loadOcsp"
+    );
   }
   const evidenceProvider =
     provider ?? createEvidenceProvider({ loadCrl, loadOcsp, http });
@@ -158,7 +151,7 @@ export function createTrustValidator({
     ? (options) => evidenceProvider.loadOcsp(options)
     : false;
   if (providedEngine && crlIndexCache !== undefined) {
-    throw invalidPolicy(
+    throw invalidProfile(
       "Configure crlIndexCache on the provided engine, not beside it"
     );
   }
@@ -169,17 +162,17 @@ export function createTrustValidator({
         crlIndexCache === false ? false : createCrlIndexCache(crlIndexCache)
     });
   const mandatory =
-    policy.revocation.requiredEvidence === "any"
+    profile.revocation.requiredEvidence === "any"
       ? []
-      : requiredMechanisms(policy.revocation.requiredEvidence);
+      : requiredMechanisms(profile.revocation.requiredEvidence);
   if (mandatory.includes("crl") && !crlLoader) {
-    throw invalidPolicy(
-      "The policy requires CRL evidence but the CRL loader is disabled"
+    throw invalidProfile(
+      "The profile requires CRL evidence but the CRL loader is disabled"
     );
   }
   if (mandatory.includes("ocsp") && !ocspLoader) {
-    throw invalidPolicy(
-      "The policy requires OCSP evidence but the OCSP loader is disabled"
+    throw invalidProfile(
+      "The profile requires OCSP evidence but the OCSP loader is disabled"
     );
   }
   const checker = createRevocationChecker({
@@ -215,15 +208,14 @@ export function createTrustValidator({
           valid: false,
           code: path.code,
           message: path.message,
-          policyId: policy.id,
-          policyVersion: policy.version,
-          ...(communityId ? { communityId } : {})
+          profileId: profile.id,
+          profileVersion: profile.version
         };
       }
 
       if (signal?.aborted) throw abortError();
       // The last path entry is the configured trust anchor. All non-anchor
-      // pipelines start together; within a certificate the policy order holds.
+      // pipelines start together; within a certificate the profile order holds.
       const controller = new AbortController();
       let removeAbortListener = () => {};
       const aborted = new Promise<"aborted">((resolve) => {
@@ -268,7 +260,7 @@ export function createTrustValidator({
         path.certificates.slice(0, -1).map(async (prepared, index) => {
           try {
             const result = await collectCertificateEvidence({
-              policy,
+              profile,
               checker,
               prepared,
               certificateIndex: index,
@@ -312,9 +304,8 @@ export function createTrustValidator({
           valid: false,
           code: "RESOURCE_LIMIT_EXCEEDED",
           message: "The verification deadline was exceeded",
-          policyId: policy.id,
-          policyVersion: policy.version,
-          ...(communityId ? { communityId } : {})
+          profileId: profile.id,
+          profileVersion: profile.version
         };
       }
       if (outcome.kind === "revoked") {
@@ -326,9 +317,8 @@ export function createTrustValidator({
           certificateIndex: outcome.value.certificateIndex,
           evidence: [outcome.value.evidence],
           findings: [outcome.value.findings],
-          policyId: policy.id,
-          policyVersion: policy.version,
-          ...(communityId ? { communityId } : {})
+          profileId: profile.id,
+          profileVersion: profile.version
         };
       }
       if (signal?.aborted) throw abortError();
@@ -348,9 +338,8 @@ export function createTrustValidator({
           certificateIndex: revokedEntry.index,
           evidence: [revokedEntry.result.evidence],
           findings: [revokedEntry.result.findings],
-          policyId: policy.id,
-          policyVersion: policy.version,
-          ...(communityId ? { communityId } : {})
+          profileId: profile.id,
+          profileVersion: profile.version
         };
       }
       const completedFindings: CertificateFindings[] = [];
@@ -373,9 +362,8 @@ export function createTrustValidator({
               : "Revocation validation failed",
             certificateIndex: entry.index,
             findings: completedFindings,
-            policyId: policy.id,
-            policyVersion: policy.version,
-            ...(communityId ? { communityId } : {})
+            profileId: profile.id,
+            profileVersion: profile.version
           };
         }
         if (entry.result.status === "unknown") {
@@ -385,9 +373,8 @@ export function createTrustValidator({
             message: entry.result.message,
             certificateIndex: entry.index,
             findings: completedFindings,
-            policyId: policy.id,
-            policyVersion: policy.version,
-            ...(communityId ? { communityId } : {})
+            profileId: profile.id,
+            profileVersion: profile.version
           };
         }
         if (entry.result.status !== "good") continue;
@@ -396,22 +383,21 @@ export function createTrustValidator({
       }
 
       const ruleFailure = await applyTrustRules({
-        policy,
+        profile,
         leaf: path.leafCertificate,
         certificatePath: path.certificates.map((entry) => entry.facts),
-        communityId,
+        profileId: profile.id,
         rules
       });
       if (ruleFailure) {
         return {
           valid: false,
-          code: "POLICY_REJECTED",
+          code: "PROFILE_REJECTED",
           message: ruleFailure,
           evidence,
           findings,
-          policyId: policy.id,
-          policyVersion: policy.version,
-          ...(communityId ? { communityId } : {})
+          profileId: profile.id,
+          profileVersion: profile.version
         };
       }
 
@@ -422,9 +408,8 @@ export function createTrustValidator({
         leafCertificate: path.leafCertificate,
         evidence,
         findings,
-        policyId: policy.id,
-        policyVersion: policy.version,
-        ...(communityId ? { communityId } : {})
+        profileId: profile.id,
+        profileVersion: profile.version
       };
     }
   };
