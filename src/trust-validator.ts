@@ -1,11 +1,6 @@
 import { X509Certificate } from "node:crypto";
-import { Certificate } from "pkijs";
 import type { CacheStore } from "./cache.ts";
-import { uriSubjectAlternativeNames } from "./certificate-names.ts";
-import {
-  type CertificateInput,
-  validateCertificatePath
-} from "./certificate-path.ts";
+import type { CertificateInput } from "./certificate-path.ts";
 import type { CrlValidationResult } from "./crl.ts";
 import type { DiagnosticCallback } from "./diagnostics.ts";
 import {
@@ -14,8 +9,11 @@ import {
   type OcspLoadOptions
 } from "./http-loaders.ts";
 import type { OcspValidationResult } from "./ocsp.ts";
+import {
+  createInlinePkiEngine,
+  type PreparedCertificate
+} from "./pki-engine.ts";
 import { createRevocationChecker } from "./revocation-checker.ts";
-import { getRevocationEndpoints } from "./revocation-endpoints.ts";
 
 export interface TrustValidatorOptions {
   trustAnchors: readonly CertificateInput[];
@@ -76,7 +74,10 @@ export function createTrustValidator({
   if (trustAnchors.length === 0) {
     throw new TypeError("trustAnchors must contain at least one certificate");
   }
-  const anchors = trustAnchors.map((input) => new X509Certificate(input).raw);
+  const anchors = trustAnchors.map((input) =>
+    Uint8Array.from(new X509Certificate(input).raw)
+  );
+  const engine = createInlinePkiEngine();
   const defaults = createHttpLoaders(http);
   const crlLoader = loadCrl ?? defaults.loadCrl;
   const ocspLoader = loadOcsp ?? defaults.loadOcsp;
@@ -89,56 +90,42 @@ export function createTrustValidator({
   });
 
   async function checkCertificateRevocation(
-    certificate: Certificate,
-    issuerCertificate: Certificate,
+    prepared: PreparedCertificate,
     certificateIndex: number,
-    checkDate?: Date
+    checkDateMs?: number
   ): Promise<CertificateRevocation> {
-    let endpoints: ReturnType<typeof getRevocationEndpoints>;
-    try {
-      endpoints = getRevocationEndpoints(certificate);
-    } catch {
-      return {
-        status: "unknown",
-        message: "Unable to parse certificate revocation endpoints"
-      };
-    }
-
     const attempts: Array<
       () => Promise<CrlValidationResult | OcspValidationResult>
     > = [];
     if (ocspLoader) {
-      for (const url of endpoints.ocspUrls) {
+      for (const url of prepared.ocspUrls) {
         attempts.push(() =>
           checker.checkOcsp({
-            certificate,
-            issuerCertificate,
+            certificateDer: prepared.der,
+            issuerDer: prepared.issuerDer!,
             source: url,
             certificateIndex,
-            checkDate,
+            checkDateMs,
+            ocspRequestDer: prepared.ocspRequestDer!,
             load: () =>
               ocspLoader({
                 url,
-                certificate: new Uint8Array(
-                  certificate.toSchema().toBER(false)
-                ),
-                issuerCertificate: new Uint8Array(
-                  issuerCertificate.toSchema().toBER(false)
-                )
+                certificate: Uint8Array.from(prepared.der),
+                issuerCertificate: Uint8Array.from(prepared.issuerDer!)
               })
           })
         );
       }
     }
     if (crlLoader) {
-      for (const url of endpoints.crlUrls) {
+      for (const url of prepared.crlUrls) {
         attempts.push(() =>
           checker.checkCrl({
-            certificate,
-            issuerCertificate,
+            certificateDer: prepared.der,
+            issuerDer: prepared.issuerDer!,
             source: url,
             certificateIndex,
-            checkDate,
+            checkDateMs,
             load: () => crlLoader(url)
           })
         );
@@ -164,36 +151,28 @@ export function createTrustValidator({
       certificateChain,
       checkDate
     }: VerifyOptions): Promise<ValidationResult> {
-      const path = await validateCertificatePath({
+      const explicitCheckDateMs = checkDate?.getTime();
+      if (
+        explicitCheckDateMs !== undefined &&
+        Number.isNaN(explicitCheckDateMs)
+      ) {
+        throw new TypeError("checkDate must be a valid date");
+      }
+      const path = await engine.preparePath({
         certificateChain,
         trustAnchors: anchors,
-        checkDate: checkDate ?? new Date(now())
+        checkDateMs: explicitCheckDateMs ?? now()
       });
       if (!path.pathValid) {
         return { valid: false, code: path.code, message: path.message };
       }
 
-      const certificates = path.certificatePath.map((der) =>
-        Certificate.fromBER(Uint8Array.from(der))
-      );
-      let leafUriSubjectAlternativeNames: string[];
-      try {
-        leafUriSubjectAlternativeNames = uriSubjectAlternativeNames(
-          certificates[0]
-        );
-      } catch {
-        return {
-          valid: false,
-          code: "INVALID_CERTIFICATE",
-          message: "Invalid leaf subject alternative name extension"
-        };
-      }
-      for (let index = 0; index < certificates.length - 1; index++) {
+      // The last path entry is the configured trust anchor.
+      for (let index = 0; index < path.certificates.length - 1; index++) {
         const revocation = await checkCertificateRevocation(
-          certificates[index],
-          certificates[index + 1],
+          path.certificates[index],
           index,
-          checkDate
+          explicitCheckDateMs
         );
         if (revocation.status === "revoked") {
           return {
@@ -217,7 +196,7 @@ export function createTrustValidator({
         valid: true,
         certificatePath: path.certificatePath,
         trustAnchorFingerprint256: path.trustAnchorFingerprint256,
-        leafUriSubjectAlternativeNames
+        leafUriSubjectAlternativeNames: path.leafUriSubjectAlternativeNames
       };
     }
   };
