@@ -32,13 +32,25 @@ npm install piscina
 ```
 
 ```typescript
-import { createTrustValidator } from "x509-trust";
+import { createValidationProfileRegistry } from "x509-trust";
 
-const validator = createTrustValidator({
+const registry = createValidationProfileRegistry();
+
+registry.register({
   trustAnchors: [rootCertificate],
+  profile: {
+    id: "example:strict",
+    version: 1,
+    source: "local-config",
+    anchorSetId: "example:root-2026",
+    revocation: {
+      requiredEvidence: "any",
+    },
+  },
 });
 
-const result = await validator.verify({
+const result = await registry.verify({
+  profileId: "example:strict",
   certificateChain: [clientCertificate, intermediateCertificate],
 });
 
@@ -49,10 +61,19 @@ if (result.valid) {
 }
 ```
 
-Create a validator once and reuse it across requests. Certificates may be PEM
-strings or DER byte arrays. Supply the leaf first, followed by intermediates;
-the trust anchor may be omitted from the chain. Only configured `trustAnchors`
-establish trust: including a root in the supplied chain does not make it trusted.
+Create the registry once and reuse it across requests. Each registered profile
+owns its trust anchors and validation rules; `verify()` selects a locally
+registered `profileId`. The `profileId` must come from trusted application
+context, never directly from an untrusted request body.
+
+Certificates may be PEM strings or DER byte arrays. Supply the leaf first,
+followed by intermediates; the trust anchor may be omitted from the chain. Only
+configured `trustAnchors` establish trust: including a root in the supplied
+chain does not make it trusted.
+
+When a deployment has exactly one fixed profile and anchor set,
+`createTrustValidator({ trustAnchors, profile })` is the simpler direct API.
+Both paths run the same validation.
 
 ## API
 
