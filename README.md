@@ -869,20 +869,6 @@ worker queue depth.
 Benchmarks are measurement tools, not unit-test gates. Results are local
 measurements, not a production SLA.
 
-## Project layout
-
-- `src/engine/` — PKI.js-backed DER/DTO engine, path/CRL/OCSP, certificate facts,
-  CRL index cache.
-- `src/profile/` — profile schema/compiler, registered rules, registry.
-- `src/evidence/` — evidence decisions, concurrent collection, HTTP loaders,
-  provider scheduling/single-flight, cache, revocation checker.
-- `src/validator/` — validation orchestration and result assembly.
-- `src/workers/` — Piscina worker engine and DER/DTO worker protocol.
-- `profiles/` — local profile data; one directory per profile plus `default/`.
-- `examples/udap/` — host-side UDAP mapping example; not part of the package.
-- `src/index.ts`, `src/worker.ts` — public entry points.
-- `src/errors.ts`, `src/diagnostics.ts` — shared errors and diagnostics.
-
 ## Package and deployment
 
 - Node.js 24 or later; ESM only.
