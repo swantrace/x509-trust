@@ -14,10 +14,16 @@ import {
   createInlinePkiEngine,
   type PreparedCertificate
 } from "./pki-engine.ts";
+import {
+  compileTrustPolicy,
+  DEFAULT_TRUST_POLICY,
+  type TrustPolicyInput
+} from "./policy.ts";
 import { createRevocationChecker } from "./revocation-checker.ts";
 
 export interface TrustValidatorOptions {
   trustAnchors: readonly CertificateInput[];
+  policy?: TrustPolicyInput;
   loadCrl?: ((url: string) => Promise<Uint8Array>) | false;
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
   http?: HttpOptions;
@@ -57,6 +63,8 @@ export type ValidationResult =
       trustAnchorFingerprint256: string;
       leafCertificate: ValidatedLeafCertificate;
       evidence: EvidenceSummary[];
+      policyId: string;
+      policyVersion: number;
     }
   | {
       valid: false;
@@ -64,6 +72,8 @@ export type ValidationResult =
       message: string;
       certificateIndex?: number;
       evidence?: EvidenceSummary[];
+      policyId?: string;
+      policyVersion?: number;
     };
 
 export interface TrustValidator {
@@ -76,6 +86,7 @@ type CertificateRevocation =
 
 export function createTrustValidator({
   trustAnchors,
+  policy: policyInput,
   loadCrl,
   loadOcsp,
   http,
@@ -88,6 +99,7 @@ export function createTrustValidator({
   if (trustAnchors.length === 0) {
     throw new TypeError("trustAnchors must contain at least one certificate");
   }
+  const policy = compileTrustPolicy(policyInput ?? DEFAULT_TRUST_POLICY);
   const anchors = trustAnchors.map((input) =>
     Uint8Array.from(new X509Certificate(input).raw)
   );
@@ -197,7 +209,13 @@ export function createTrustValidator({
         checkDateMs: explicitCheckDateMs ?? now()
       });
       if (!path.pathValid) {
-        return { valid: false, code: path.code, message: path.message };
+        return {
+          valid: false,
+          code: path.code,
+          message: path.message,
+          policyId: policy.id,
+          policyVersion: policy.version
+        };
       }
 
       // The last path entry is the configured trust anchor.
@@ -214,7 +232,9 @@ export function createTrustValidator({
             code: "CERTIFICATE_REVOKED",
             message: "Certificate has been revoked",
             certificateIndex: index,
-            evidence: [revocation.evidence]
+            evidence: [revocation.evidence],
+            policyId: policy.id,
+            policyVersion: policy.version
           };
         }
         if (revocation.status === "unknown") {
@@ -222,7 +242,9 @@ export function createTrustValidator({
             valid: false,
             code: "REVOCATION_STATUS_UNKNOWN",
             message: revocation.message,
-            certificateIndex: index
+            certificateIndex: index,
+            policyId: policy.id,
+            policyVersion: policy.version
           };
         }
         evidence.push(revocation.evidence);
@@ -233,7 +255,9 @@ export function createTrustValidator({
         certificatePath: path.certificatePath,
         trustAnchorFingerprint256: path.trustAnchorFingerprint256,
         leafCertificate: path.leafCertificate,
-        evidence
+        evidence,
+        policyId: policy.id,
+        policyVersion: policy.version
       };
     }
   };
