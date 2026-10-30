@@ -71,18 +71,21 @@ export interface PkiEngine {
     certificateChain: readonly CertificateInput[];
     trustAnchors: readonly Uint8Array[];
     checkDateMs: number;
+    signal?: AbortSignal;
   }): Promise<PreparedPathResult>;
   validateCrl(options: {
     certificateDer: Uint8Array;
     issuerDer: Uint8Array;
     crl: Uint8Array;
     checkDateMs?: number;
+    signal?: AbortSignal;
   }): Promise<CrlValidationResult>;
   validateOcsp(options: {
     certificateDer: Uint8Array;
     issuerDer: Uint8Array;
     response: Uint8Array;
     checkDateMs?: number;
+    signal?: AbortSignal;
   }): Promise<OcspValidationResult>;
 }
 
@@ -229,7 +232,8 @@ async function createOcspRequest(
 
 export function createInlinePkiEngine(): PkiEngine {
   return {
-    async preparePath({ certificateChain, trustAnchors, checkDateMs }) {
+    async preparePath({ certificateChain, trustAnchors, checkDateMs, signal }) {
+      signal?.throwIfAborted();
       if (!Number.isFinite(checkDateMs)) {
         throw new TypeError("checkDate must be a valid date");
       }

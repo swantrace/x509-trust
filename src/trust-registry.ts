@@ -9,6 +9,7 @@ import type {
   HttpOptions,
   OcspLoadOptions
 } from "./http-loaders.ts";
+import type { PkiEngine } from "./pki-engine.ts";
 import { compileTrustPolicy, type TrustPolicyInput } from "./policy.ts";
 import {
   normalizeRuleRegistrations,
@@ -33,6 +34,7 @@ export interface TrustRegistryOptions {
     | false;
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
   provider?: EvidenceProvider;
+  engine?: PkiEngine;
   http?: HttpOptions;
   deadlineMs?: number;
   cache?: CacheStore;

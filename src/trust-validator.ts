@@ -15,7 +15,7 @@ import {
   type OcspLoadOptions
 } from "./http-loaders.ts";
 import type { ValidatedLeafCertificate } from "./leaf-certificate.ts";
-import { createInlinePkiEngine } from "./pki-engine.ts";
+import { createInlinePkiEngine, type PkiEngine } from "./pki-engine.ts";
 import {
   compileTrustPolicy,
   DEFAULT_TRUST_POLICY,
@@ -38,6 +38,7 @@ export interface TrustValidatorOptions {
     | false;
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
   provider?: EvidenceProvider;
+  engine?: PkiEngine;
   http?: HttpOptions;
   deadlineMs?: number;
   cache?: CacheStore;
@@ -104,6 +105,7 @@ export function createTrustValidator({
   loadCrl,
   loadOcsp,
   provider,
+  engine: providedEngine,
   http,
   deadlineMs = 60_000,
   cache,
@@ -142,7 +144,7 @@ export function createTrustValidator({
   const ocspLoader: OcspLoader | false = evidenceProvider.supportsOcsp
     ? (options) => evidenceProvider.loadOcsp(options)
     : false;
-  const engine = createInlinePkiEngine();
+  const engine = providedEngine ?? createInlinePkiEngine();
   const mandatory =
     policy.revocation.requiredEvidence === "any"
       ? []
@@ -182,7 +184,8 @@ export function createTrustValidator({
       const path = await engine.preparePath({
         certificateChain,
         trustAnchors: anchors,
-        checkDateMs: explicitCheckDateMs ?? now()
+        checkDateMs: explicitCheckDateMs ?? now(),
+        signal
       });
       if (!path.pathValid) {
         return {

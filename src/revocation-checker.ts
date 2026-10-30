@@ -224,7 +224,8 @@ export function createRevocationChecker({
             certificateDer: options.certificateDer,
             issuerDer: options.issuerDer,
             crl,
-            checkDateMs: checkDateMs ?? now()
+            checkDateMs: checkDateMs ?? now(),
+            signal: options.signal
           }),
         (event) =>
           report({
@@ -249,7 +250,8 @@ export function createRevocationChecker({
             certificateDer: options.certificateDer,
             issuerDer: options.issuerDer,
             response,
-            checkDateMs: checkDateMs ?? now()
+            checkDateMs: checkDateMs ?? now(),
+            signal: options.signal
           }),
         (event) =>
           report({

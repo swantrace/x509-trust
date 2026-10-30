@@ -53,6 +53,7 @@
   },
   "dependencies": {
     "asn1js": "^4.0.0",
+    "piscina": "^5.3.2",
     "pkijs": "^4.0.0"
   }
 }

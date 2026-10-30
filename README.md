@@ -38,7 +38,8 @@ These types describe the public API and can be imported from `x509-trust`.
 The package also exports `createTrustValidator()`, `createTrustRegistry()`,
 `createEvidenceProvider()`, `createMemoryCache()`,
 `getUriSubjectAlternativeNames()`, `compileTrustPolicy()`, `PolicyError`,
-`ResourceLimitError`, and the policy/capability/provider types.
+`ResourceLimitError`, `createWorkerPkiEngine`, and the
+policy/capability/provider/worker types.
 
 ```typescript
 type CertificateInput = string | Uint8Array;
@@ -51,6 +52,7 @@ interface TrustValidatorOptions {
   loadCrl?: ((url: string, options?: CrlLoadOptions) => Promise<Uint8Array>) | false;
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
   provider?: EvidenceProvider;
+  engine?: PkiEngine;
   http?: HttpOptions;
   deadlineMs?: number;
   cache?: CacheStore;
@@ -469,6 +471,62 @@ waiter; when the last waiter leaves, the underlying request aborts. Successful
 and failed flights are always removed so a later request can retry. A shared CRL
 download is still evaluated separately for each certificate; a `good` result
 for one certificate never becomes another certificate's status.
+
+## Optional worker execution
+
+PKI.js path, CRL, and OCSP computation runs inline by default. When a host needs
+to keep CPU-heavy evidence validation off the main thread, create a bounded,
+reusable Piscina pool and pass its engine to one or more validators or to a
+registry:
+
+```typescript
+import {
+  createTrustValidator,
+  createWorkerPkiEngine
+} from "x509-trust";
+
+const engine = createWorkerPkiEngine({
+  maxThreads: 2,
+  maxQueue: 16,
+  taskTimeoutMs: 5000
+});
+
+const validator = createTrustValidator({
+  trustAnchors: [rootCertificate],
+  provider,
+  engine
+});
+
+// The caller owns the pool and must release it.
+await engine.close({ force: true });
+```
+
+| Worker option   | Default | Meaning |
+| --------------- | ------- | ------- |
+| `maxThreads`    | `min(4, availableParallelism - 1)` | Maximum worker threads. |
+| `minThreads`    | `0`     | Threads kept ready at all times. |
+| `maxQueue`      | `maxThreads * 4` | Maximum tasks waiting for a worker. |
+| `idleTimeout`   | `30000` | Idle worker shutdown delay. |
+| `taskTimeoutMs` | `10000` | Per-task deadline; expiry aborts that worker task. |
+| `filename`      | packaged worker | Override only when embedding the worker file yourself. |
+
+Only DER bytes and JSON-compatible DTOs cross the thread boundary. HTTP,
+bounded request scheduling, single-flight, caching, diagnostics, registered
+rules, and cancellation remain on the main thread. The pool is long-lived and
+can be shared by validators and registry communities; it is not created per
+verification or per community.
+
+Worker queue overflow and task timeouts return `RESOURCE_LIMIT_EXCEEDED`.
+Aborting a task terminates its worker; the pool replaces it, and subsequent
+tasks are unaffected. Aborting a queued task rejects it without terminating a
+running task. Inline and worker modes produce the same success and failure
+results for the same inputs.
+
+Worker execution is optional and not the default. `docs/benchmark.md` records
+the local inline/worker comparison: the worker path clearly reduces main-thread
+event-loop delay for CPU-heavy path work, while small CRL/OCSP tasks can be
+slightly slower because of task dispatch overhead. Choose it from measurements
+on the target deployment, not from a blanket default.
 
 ## Concurrency, early rejection, and cancellation
 
