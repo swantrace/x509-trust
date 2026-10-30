@@ -242,6 +242,15 @@ software_statement.x5c 能链到这个 root
 - 证书里的 community 约定 policy OID；
 - 人工审批或社区目录。
 
+这里有一个容易走错的方向：遍历所有已注册 profile，把第一个验证成功的结果当成 community。这个做法不可靠：
+
+- 顺序依赖，结果取决于 profile 遍历顺序；
+- 多个 profile 可能同时通过；
+- 共享 anchor 时，所有相关 profile 都可能通过，无法区分；
+- 验证通过只说明满足某个 profile，不等于该 client 被授权使用这个 community。
+
+正确做法是先把 community 作为**显式上下文**确定下来，再调用 registry；如果没有上下文，应返回明确的“需要 community”或“无法确定”错误，而不是猜一个。对于标准 UDAP 客户端，可靠上下文通常来自 registration endpoint、tenant/deployment 配置或已有注册记录；如果单 endpoint 服务多个 community，则需要非标准 hint 或预先绑定。
+
 `x509-trust` 不尝试从证书推断 community。它只验证“这条链是否到达当前 profile 配置的 anchor”；`profileId` 的选择和 `(community, iss)` 注册命名空间属于 UDAP adapter。
 
 ### 两个 root 是否“同一个”
