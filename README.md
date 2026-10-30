@@ -373,6 +373,25 @@ The compiled policy has these defaults:
 | `revocation.requireNextUpdate`     | `true`         | Evidence must have a freshness boundary. |
 | `revocation.clockSkewMs`           | `0`            | No clock-skew allowance. |
 
+### Policy files
+
+Community policies live outside `src/`, under `policies/<community-id>/`:
+
+```text
+policies/
+├── default/
+│   └── policy.json
+└── community-a/
+    ├── policy.json
+    └── anchors/          # optional host-approved public trust bundle
+```
+
+`policies/default/policy.json` mirrors the built-in strict default and is kept in
+sync by a test. The code constant `DEFAULT_TRUST_POLICY` remains authoritative.
+Policies are local reviewed data; the library never downloads a policy from a
+request-supplied URI. `anchors/` may contain only public, host-approved
+certificates—never private keys. See [policies/README.md](policies/README.md).
+
 `sourceOrder` controls collection order; `requiredEvidence` independently decides
 which mechanisms must produce a good result:
 
@@ -923,6 +942,7 @@ The source tree is grouped by responsibility:
   provider scheduling/single-flight, cache, revocation checker.
 - `src/validator/` — public validation orchestration and result assembly.
 - `src/workers/` — Piscina worker engine and DER/DTO worker task protocol.
+- `policies/` — local policy data; one directory per community plus `default/`.
 - `src/index.ts`, `src/worker.ts` — public entry points.
 - Shared errors/diagnostics remain at `src/`.
 
@@ -937,7 +957,7 @@ The source tree is grouped by responsibility:
   resolved relative to the installed package, including when installed from a
   tarball.
 - `npm pack` contains `dist`, `package.json`, and `README.md`; it excludes
-  `.dsh`, PDFs, tests, benchmark sources, fixtures, native artifacts, private
-  keys, and stale build output. Builds remove `dist` first so stale files cannot
-  be packed.
+  `.dsh`, PDFs, tests, benchmark sources, fixtures, policies, native artifacts,
+  private keys, and stale build output. Builds remove `dist` first so stale files
+  cannot be packed. Community policies remain host-owned data.
 - No database, UI framework, or web server is part of this package.

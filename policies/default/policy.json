@@ -1,0 +1,26 @@
+{
+  "id": "x509-trust:strict-default",
+  "version": 1,
+  "versionOrder": 1,
+  "source": {
+    "uri": "x509-trust:built-in-strict-default",
+    "version": "1"
+  },
+  "anchorSetId": "explicit",
+  "requiredCapabilities": [
+    "revocation:any",
+    "revocation:crl",
+    "revocation:ocsp",
+    "revocation:non-anchor-chain",
+    "revocation:require-next-update",
+    "revocation:zero-clock-skew"
+  ],
+  "revocation": {
+    "requiredEvidence": "any",
+    "sourceOrder": ["ocsp", "crl"],
+    "onUnknown": "reject",
+    "scope": "non-anchor-chain",
+    "requireNextUpdate": true,
+    "clockSkewMs": 0
+  }
+}

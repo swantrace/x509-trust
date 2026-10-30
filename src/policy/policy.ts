@@ -101,11 +101,27 @@ export interface CompilePolicyOptions {
 export const DEFAULT_TRUST_POLICY: TrustPolicyInput = Object.freeze({
   id: "x509-trust:strict-default",
   version: 1,
-  source: "x509-trust built-in strict default",
+  versionOrder: 1,
+  source: Object.freeze({
+    uri: "x509-trust:built-in-strict-default",
+    version: "1"
+  }),
   anchorSetId: "explicit",
+  requiredCapabilities: Object.freeze([
+    "revocation:any",
+    "revocation:crl",
+    "revocation:ocsp",
+    "revocation:non-anchor-chain",
+    "revocation:require-next-update",
+    "revocation:zero-clock-skew"
+  ] as const),
   revocation: Object.freeze({
     requiredEvidence: "any" as const,
-    sourceOrder: Object.freeze(["ocsp", "crl"] as const)
+    sourceOrder: Object.freeze(["ocsp", "crl"] as const),
+    onUnknown: "reject" as const,
+    scope: "non-anchor-chain" as const,
+    requireNextUpdate: true as const,
+    clockSkewMs: 0 as const
   })
 });
 
