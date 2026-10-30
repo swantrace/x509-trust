@@ -9,6 +9,12 @@ Requires Node.js 24 or later.
 npm install x509-trust
 ```
 
+Worker execution is an optional subpath and requires installing `piscina`:
+
+```sh
+npm install piscina
+```
+
 ```typescript
 import { createTrustValidator } from "x509-trust";
 
@@ -38,8 +44,8 @@ These types describe the public API and can be imported from `x509-trust`.
 The package also exports `createTrustValidator()`, `createTrustRegistry()`,
 `createEvidenceProvider()`, `createMemoryCache()`,
 `getUriSubjectAlternativeNames()`, `compileTrustPolicy()`, `PolicyError`,
-`ResourceLimitError`, `createWorkerPkiEngine`, and the
-policy/capability/provider/worker types.
+`ResourceLimitError`, and the policy/capability/provider types. Worker APIs
+are available only from `x509-trust/worker`.
 
 ```typescript
 type CertificateInput = string | Uint8Array;
@@ -509,10 +515,8 @@ reusable Piscina pool and pass its engine to one or more validators or to a
 registry:
 
 ```typescript
-import {
-  createTrustValidator,
-  createWorkerPkiEngine
-} from "x509-trust";
+import { createTrustValidator } from "x509-trust";
+import { createWorkerPkiEngine } from "x509-trust/worker";
 
 const engine = createWorkerPkiEngine({
   maxThreads: 2,
@@ -852,10 +856,13 @@ credentials remain outside this repository.
 ## Package and deployment contract
 
 - Node.js 24 or later; ESM only.
-- Public entry point: `x509-trust` via `./dist/index.js` and `./dist/index.d.ts`.
-- Runtime dependencies: `asn1js`, `pkijs`, and `piscina` (only for the optional
-  worker engine). The worker file is included in `dist` and resolved relative to
-  the installed package, including when the package is installed from a tarball.
+- Public entry points: `x509-trust` via `./dist/index.js`/`./dist/index.d.ts`,
+  and `x509-trust/worker` via `./dist/worker.js`/`./dist/worker.d.ts`.
+- Runtime dependencies: `asn1js` and `pkijs`. `piscina` is an optional peer
+  dependency required only by `x509-trust/worker`; the main entry point does not
+  load or create worker threads. The worker file is included in `dist` and
+  resolved relative to the installed package, including when installed from a
+  tarball.
 - `npm pack` contains `dist`, `package.json`, and `README.md`; it excludes
   `.dsh`, PDFs, tests, benchmark sources, fixtures, native artifacts, private
   keys, and stale build output. Builds remove `dist` first so stale files cannot

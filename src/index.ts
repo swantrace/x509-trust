@@ -33,12 +33,6 @@ export type {
   PreparedPathResult
 } from "./pki-engine.ts";
 export {
-  createWorkerPkiEngine,
-  type PkiWorkerEngine,
-  type PkiWorkerEngineOptions,
-  type PkiWorkerStats
-} from "./pki-worker-engine.ts";
-export {
   type CompiledTrustPolicy,
   compileTrustPolicy,
   DEFAULT_TRUST_POLICY,

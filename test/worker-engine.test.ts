@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
+import * as mainEntry from "../src/index.ts";
 import {
   createEvidenceProvider,
   createTrustValidator,
-  createWorkerPkiEngine,
   ResourceLimitError,
   type TrustPolicyInput
 } from "../src/index.ts";
 import { createInlinePkiEngine } from "../src/pki-engine.ts";
+import { createWorkerPkiEngine } from "../src/worker.ts";
 import {
   createCrl,
   createCrlWithSerials,
@@ -82,6 +83,11 @@ function provider() {
       url.endsWith("/intermediate.crl") ? intermediateCrl : leafCrl
   });
 }
+
+test("worker APIs live only on the worker entrypoint", () => {
+  assert.equal("createWorkerPkiEngine" in mainEntry, false);
+  assert.equal(typeof createWorkerPkiEngine, "function");
+});
 
 test("worker path preparation matches the inline engine", async () => {
   const inline = createInlinePkiEngine();

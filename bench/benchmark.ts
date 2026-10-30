@@ -9,12 +9,12 @@ import { createCrlIndexCache } from "../src/crl-index-cache.ts";
 import {
   createEvidenceProvider,
   createTrustValidator,
-  createWorkerPkiEngine,
   type EvidenceProvider,
   type TrustPolicyInput,
   type ValidationResult
 } from "../src/index.ts";
 import { createInlinePkiEngine } from "../src/pki-engine.ts";
+import { createWorkerPkiEngine } from "../src/worker.ts";
 import {
   createCrl,
   createCrlWithSerials,
