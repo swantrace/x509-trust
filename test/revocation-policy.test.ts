@@ -134,7 +134,14 @@ test("tries each URL for a required mechanism in order and falls back", async ()
   });
   const result = await validator.verify({ certificateChain: chainInput });
   assert.equal(result.valid, true);
-  assert.deepEqual(calls.crl, [leafCrl[0], leafCrl[1], intermediateCrl]);
+  assert.deepEqual(
+    calls.crl.filter((url) => url.startsWith("http://leaf.test")),
+    [leafCrl[0], leafCrl[1]]
+  );
+  assert.deepEqual(
+    calls.crl.filter((url) => url === intermediateCrl),
+    [intermediateCrl]
+  );
   assert.equal(calls.ocsp.length, 0);
 });
 

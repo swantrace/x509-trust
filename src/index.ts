@@ -7,7 +7,11 @@ export {
   type PolicyErrorCode
 } from "./errors.ts";
 export type { EvidenceSummary } from "./evidence.ts";
-export type { HttpOptions, OcspLoadOptions } from "./http-loaders.ts";
+export type {
+  CrlLoadOptions,
+  HttpOptions,
+  OcspLoadOptions
+} from "./http-loaders.ts";
 export type {
   CertificateFacts,
   KeyUsageName,

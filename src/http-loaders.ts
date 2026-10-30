@@ -37,10 +37,15 @@ for (const [network, prefix] of [
 const globalIpv6 = new BlockList();
 globalIpv6.addSubnet("2000::", 3, "ipv6");
 
+export interface CrlLoadOptions {
+  signal?: AbortSignal;
+}
+
 export interface OcspLoadOptions {
   url: string;
   certificate: Uint8Array;
   issuerCertificate: Uint8Array;
+  signal?: AbortSignal;
 }
 
 export interface HttpOptions {
@@ -116,9 +121,41 @@ export function createHttpLoaders({
     allowedOrigins &&
     new Set(allowedOrigins.map((value) => parseHttpUrl(value).origin));
 
+  function mergeDeadline(external?: AbortSignal): {
+    signal: AbortSignal;
+    dispose(): void;
+  } {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort(
+        new DOMException(
+          "The operation was aborted due to timeout",
+          "TimeoutError"
+        )
+      );
+    }, timeoutMs);
+    timer.unref();
+    const onAbort = () => {
+      clearTimeout(timer);
+      controller.abort(external?.reason);
+    };
+    if (external) {
+      if (external.aborted) onAbort();
+      else external.addEventListener("abort", onAbort, { once: true });
+    }
+    return {
+      signal: controller.signal,
+      dispose() {
+        clearTimeout(timer);
+        external?.removeEventListener("abort", onAbort);
+      }
+    };
+  }
+
   async function request(
     urlString: string,
-    body?: Uint8Array
+    body?: Uint8Array,
+    externalSignal?: AbortSignal
   ): Promise<Uint8Array> {
     const url = parseHttpUrl(urlString);
     if (origins && !origins.has(url.origin))
@@ -132,14 +169,15 @@ export function createHttpLoaders({
       throw new Error("HTTP revocation sources must use public addresses");
     }
     const transport = url.protocol === "https:" ? https : http;
-    return new Promise((resolve, reject) => {
+    const deadline = mergeDeadline(externalSignal);
+    return new Promise<Uint8Array>((resolve, reject) => {
       const outgoing = transport.request(
         url,
         {
           method: body ? "POST" : "GET",
           agent: false,
           lookup: allowPrivateAddresses ? undefined : publicLookup,
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: deadline.signal,
           headers: body
             ? {
                 "Content-Type": "application/ocsp-request",
@@ -184,12 +222,12 @@ export function createHttpLoaders({
       );
       outgoing.on("error", reject);
       outgoing.end(body && Buffer.from(body));
-    });
+    }).finally(deadline.dispose);
   }
 
   return {
-    async loadCrl(url: string): Promise<Uint8Array> {
-      const data = await request(url);
+    async loadCrl(url: string, options?: CrlLoadOptions): Promise<Uint8Array> {
+      const data = await request(url, undefined, options?.signal);
       const text = Buffer.from(data).toString("ascii").trim();
       if (!text.startsWith("-----BEGIN")) return data;
       const pem =
@@ -202,7 +240,8 @@ export function createHttpLoaders({
     async loadOcsp({
       url,
       certificate,
-      issuerCertificate
+      issuerCertificate,
+      signal
     }: OcspLoadOptions): Promise<Uint8Array> {
       const ocsp = new OCSPRequest();
       await ocsp.createForCertificate(
@@ -214,7 +253,11 @@ export function createHttpLoaders({
           hashAlgorithm: OCSP_CERT_ID_HASH
         }
       );
-      return request(url, new Uint8Array(ocsp.toSchema(true).toBER(false)));
+      return request(
+        url,
+        new Uint8Array(ocsp.toSchema(true).toBER(false)),
+        signal
+      );
     }
   };
 }

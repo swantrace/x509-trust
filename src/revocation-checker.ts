@@ -15,7 +15,8 @@ interface RevocationCheckOptions {
   certificateDer: Uint8Array;
   issuerDer: Uint8Array;
   source: string;
-  load: () => Promise<Uint8Array>;
+  load: (signal?: AbortSignal) => Promise<Uint8Array>;
+  signal?: AbortSignal;
   checkDateMs?: number;
   certificateIndex?: number;
   ocspRequestDer?: Uint8Array;
@@ -122,9 +123,10 @@ export function createRevocationChecker({
 
   async function check<T extends RevocationResult>(
     key: string,
-    load: () => Promise<Uint8Array>,
+    load: (signal?: AbortSignal) => Promise<Uint8Array>,
     validate: (data: Uint8Array) => Promise<T>,
-    notify: Report
+    notify: Report,
+    signal?: AbortSignal
   ): Promise<T> {
     const cached = await read(key, notify);
     if (cached !== null) {
@@ -156,7 +158,7 @@ export function createRevocationChecker({
     let result: T;
     let data: Uint8Array;
     try {
-      data = Uint8Array.from(await load());
+      data = Uint8Array.from(await load(signal));
       result = await validate(data);
     } catch (error) {
       notify({
@@ -180,22 +182,28 @@ export function createRevocationChecker({
       );
       const ttlMs = Math.floor(expiresAt - now());
       if (ttlMs > 0) {
-        try {
-          await cache.set(
-            key,
-            JSON.stringify({
-              der: Buffer.from(data).toString("base64"),
-              expiresAt,
-              cachedAt
-            }),
-            ttlMs
-          );
-        } catch {
-          notify({
-            event: "cache_error",
-            message: "Unable to cache validated evidence"
-          });
-        }
+        const write = async () => {
+          try {
+            await cache.set(
+              key,
+              JSON.stringify({
+                der: Buffer.from(data).toString("base64"),
+                expiresAt,
+                cachedAt
+              }),
+              ttlMs
+            );
+          } catch {
+            notify({
+              event: "cache_error",
+              message: "Unable to cache validated evidence"
+            });
+          }
+        };
+        // A revoked result must not wait for a slow cache backend. The write is
+        // observed via its own catch; good results keep the previous behavior.
+        if (result.status === "revoked") void write();
+        else await write();
       }
     }
     return result;
@@ -223,7 +231,8 @@ export function createRevocationChecker({
             ...event,
             mechanism: "crl",
             certificateIndex: options.certificateIndex
-          })
+          }),
+        options.signal
       );
     },
     async checkOcsp(
@@ -247,7 +256,8 @@ export function createRevocationChecker({
             ...event,
             mechanism: "ocsp",
             certificateIndex: options.certificateIndex
-          })
+          }),
+        options.signal
       );
     }
   };

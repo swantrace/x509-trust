@@ -6,6 +6,7 @@ import { invalidPolicy } from "./errors.ts";
 import { type EvidenceSummary, requiredMechanisms } from "./evidence.ts";
 import { collectCertificateEvidence } from "./evidence-collector.ts";
 import {
+  type CrlLoadOptions,
   createHttpLoaders,
   type HttpOptions,
   type OcspLoadOptions
@@ -29,7 +30,9 @@ export interface TrustValidatorOptions {
   policy?: TrustPolicyInput;
   rules?: readonly TrustRuleRegistration[];
   communityId?: string;
-  loadCrl?: ((url: string) => Promise<Uint8Array>) | false;
+  loadCrl?:
+    | ((url: string, options?: CrlLoadOptions) => Promise<Uint8Array>)
+    | false;
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
   http?: HttpOptions;
   cache?: CacheStore;
@@ -42,6 +45,7 @@ export interface TrustValidatorOptions {
 export interface VerifyOptions {
   certificateChain: readonly CertificateInput[];
   checkDate?: Date;
+  signal?: AbortSignal;
 }
 
 export type ValidationFailureCode =
@@ -77,6 +81,10 @@ export type ValidationResult =
 
 export interface TrustValidator {
   verify(options: VerifyOptions): Promise<ValidationResult>;
+}
+
+function abortError(): DOMException {
+  return new DOMException("The operation was aborted", "AbortError");
 }
 
 export function createTrustValidator({
@@ -138,8 +146,10 @@ export function createTrustValidator({
   return {
     async verify({
       certificateChain,
-      checkDate
+      checkDate,
+      signal
     }: VerifyOptions): Promise<ValidationResult> {
+      if (signal?.aborted) throw abortError();
       const explicitCheckDateMs = checkDate?.getTime();
       if (
         explicitCheckDateMs !== undefined &&
@@ -163,42 +173,138 @@ export function createTrustValidator({
         };
       }
 
-      // The last path entry is the configured trust anchor.
+      if (signal?.aborted) throw abortError();
+      // The last path entry is the configured trust anchor. All non-anchor
+      // pipelines start together; within a certificate the policy order holds.
+      const controller = new AbortController();
+      let removeAbortListener = () => {};
+      const aborted = new Promise<"aborted">((resolve) => {
+        if (!signal) return;
+        const onAbort = () => {
+          controller.abort();
+          resolve("aborted");
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        removeAbortListener = () =>
+          signal.removeEventListener("abort", onAbort);
+      });
+
+      let resolveRevoked!: (value: {
+        certificateIndex: number;
+        evidence: EvidenceSummary;
+      }) => void;
+      const revokedSignal = new Promise<{
+        certificateIndex: number;
+        evidence: EvidenceSummary;
+      }>((resolve) => {
+        resolveRevoked = resolve;
+      });
+
+      type PipelineResult =
+        | {
+            index: number;
+            result: Awaited<ReturnType<typeof collectCertificateEvidence>>;
+          }
+        | { index: number; error: unknown };
+      const allCompleted = Promise.all(
+        path.certificates.slice(0, -1).map(async (prepared, index) => {
+          try {
+            const result = await collectCertificateEvidence({
+              policy,
+              checker,
+              prepared,
+              certificateIndex: index,
+              checkDateMs: explicitCheckDateMs,
+              signal: controller.signal,
+              crlLoader: crlLoader || undefined,
+              ocspLoader: ocspLoader || undefined
+            });
+            if (result.status === "revoked") {
+              resolveRevoked({
+                certificateIndex: index,
+                evidence: result.evidence
+              });
+            }
+            return { index, result } satisfies PipelineResult;
+          } catch (error) {
+            return { index, error } satisfies PipelineResult;
+          }
+        })
+      );
+
+      const outcome = await Promise.race([
+        allCompleted.then((results) => ({
+          kind: "completed" as const,
+          results
+        })),
+        revokedSignal.then((value) => ({ kind: "revoked" as const, value })),
+        aborted.then(() => ({ kind: "aborted" as const }))
+      ]);
+      removeAbortListener();
+      if (outcome.kind === "aborted") {
+        controller.abort();
+        throw abortError();
+      }
+      if (outcome.kind === "revoked") {
+        controller.abort();
+        return {
+          valid: false,
+          code: "CERTIFICATE_REVOKED",
+          message: "Certificate has been revoked",
+          certificateIndex: outcome.value.certificateIndex,
+          evidence: [outcome.value.evidence],
+          policyId: policy.id,
+          policyVersion: policy.version,
+          ...(communityId ? { communityId } : {})
+        };
+      }
+      if (signal?.aborted) throw abortError();
+
+      const revokedEntry = outcome.results.find(
+        (entry) => !("error" in entry) && entry.result.status === "revoked"
+      );
+      if (
+        revokedEntry &&
+        !("error" in revokedEntry) &&
+        revokedEntry.result.status === "revoked"
+      ) {
+        return {
+          valid: false,
+          code: "CERTIFICATE_REVOKED",
+          message: "Certificate has been revoked",
+          certificateIndex: revokedEntry.index,
+          evidence: [revokedEntry.result.evidence],
+          policyId: policy.id,
+          policyVersion: policy.version,
+          ...(communityId ? { communityId } : {})
+        };
+      }
       const evidence: EvidenceSummary[] = [];
-      for (let index = 0; index < path.certificates.length - 1; index++) {
-        const revocation = await collectCertificateEvidence({
-          policy,
-          checker,
-          prepared: path.certificates[index],
-          certificateIndex: index,
-          checkDateMs: explicitCheckDateMs,
-          crlLoader: crlLoader || undefined,
-          ocspLoader: ocspLoader || undefined
-        });
-        if (revocation.status === "revoked") {
-          return {
-            valid: false,
-            code: "CERTIFICATE_REVOKED",
-            message: "Certificate has been revoked",
-            certificateIndex: index,
-            evidence: [revocation.evidence],
-            policyId: policy.id,
-            policyVersion: policy.version,
-            ...(communityId ? { communityId } : {})
-          };
-        }
-        if (revocation.status === "unknown") {
+      for (const entry of outcome.results) {
+        if ("error" in entry) {
           return {
             valid: false,
             code: "REVOCATION_STATUS_UNKNOWN",
-            message: revocation.message,
-            certificateIndex: index,
+            message: "Revocation validation failed",
+            certificateIndex: entry.index,
             policyId: policy.id,
             policyVersion: policy.version,
             ...(communityId ? { communityId } : {})
           };
         }
-        evidence.push(...revocation.evidence);
+        if (entry.result.status === "unknown") {
+          return {
+            valid: false,
+            code: "REVOCATION_STATUS_UNKNOWN",
+            message: entry.result.message,
+            certificateIndex: entry.index,
+            policyId: policy.id,
+            policyVersion: policy.version,
+            ...(communityId ? { communityId } : {})
+          };
+        }
+        if (entry.result.status !== "good") continue;
+        evidence.push(...entry.result.evidence);
       }
 
       const ruleFailure = await applyTrustRules({

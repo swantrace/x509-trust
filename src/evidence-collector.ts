@@ -5,14 +5,14 @@ import {
   type EvidenceSummary,
   requiredMechanisms
 } from "./evidence.ts";
-import type { OcspLoadOptions } from "./http-loaders.ts";
+import type { CrlLoadOptions, OcspLoadOptions } from "./http-loaders.ts";
 import type { OcspValidationResult } from "./ocsp.ts";
 import type { PreparedCertificate } from "./pki-engine.ts";
 import type { CompiledTrustPolicy } from "./policy.ts";
 import type { createRevocationChecker } from "./revocation-checker.ts";
 
 type RevocationChecker = ReturnType<typeof createRevocationChecker>;
-type CrlLoader = (url: string) => Promise<Uint8Array>;
+type CrlLoader = (url: string, options?: CrlLoadOptions) => Promise<Uint8Array>;
 type OcspLoader = (options: OcspLoadOptions) => Promise<Uint8Array>;
 
 export type CertificateRevocation =
@@ -26,6 +26,7 @@ interface EvidenceCollectorOptions {
   prepared: PreparedCertificate;
   certificateIndex: number;
   checkDateMs?: number;
+  signal?: AbortSignal;
   crlLoader?: CrlLoader;
   ocspLoader?: OcspLoader;
 }
@@ -101,6 +102,7 @@ export async function collectCertificateEvidence({
   prepared,
   certificateIndex,
   checkDateMs,
+  signal,
   crlLoader,
   ocspLoader
 }: EvidenceCollectorOptions): Promise<CertificateRevocation> {
@@ -111,6 +113,7 @@ export async function collectCertificateEvidence({
     "No usable CRL or OCSP source is configured for this certificate";
 
   for (const mechanism of policy.revocation.sourceOrder) {
+    signal?.throwIfAborted();
     const urls = mechanism === "crl" ? prepared.crlUrls : prepared.ocspUrls;
     const loader = mechanism === "crl" ? crlLoader : ocspLoader;
     if (!loader) continue;
@@ -129,7 +132,9 @@ export async function collectCertificateEvidence({
                 source: url,
                 certificateIndex,
                 checkDateMs,
-                load: () => (loader as CrlLoader)(url)
+                signal,
+                load: (loadSignal) =>
+                  (loader as CrlLoader)(url, { signal: loadSignal })
               })
             : await checker.checkOcsp({
                 certificateDer: prepared.der,
@@ -137,12 +142,14 @@ export async function collectCertificateEvidence({
                 source: url,
                 certificateIndex,
                 checkDateMs,
+                signal,
                 ocspRequestDer: prepared.ocspRequestDer!,
-                load: () =>
+                load: (loadSignal) =>
                   (loader as OcspLoader)({
                     url,
                     certificate: Uint8Array.from(prepared.der),
-                    issuerCertificate: Uint8Array.from(prepared.issuerDer!)
+                    issuerCertificate: Uint8Array.from(prepared.issuerDer!),
+                    signal: loadSignal
                   })
               });
         const summary = recordResult(
@@ -176,7 +183,8 @@ export async function collectCertificateEvidence({
         }
         // This mechanism is satisfied; continue with the next required one.
         break;
-      } catch {
+      } catch (error) {
+        if (signal?.aborted) throw error;
         attempts.push({
           certificateIndex,
           mechanism,

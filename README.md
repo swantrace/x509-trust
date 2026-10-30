@@ -44,7 +44,10 @@ type CertificateInput = string | Uint8Array;
 
 interface TrustValidatorOptions {
   trustAnchors: readonly CertificateInput[];
-  loadCrl?: ((url: string) => Promise<Uint8Array>) | false;
+  policy?: TrustPolicyInput;
+  rules?: readonly TrustRuleRegistration[];
+  communityId?: string;
+  loadCrl?: ((url: string, options?: CrlLoadOptions) => Promise<Uint8Array>) | false;
   loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
   http?: HttpOptions;
   cache?: CacheStore;
@@ -54,10 +57,15 @@ interface TrustValidatorOptions {
   onDiagnostic?: DiagnosticCallback;
 }
 
+interface CrlLoadOptions {
+  signal?: AbortSignal;
+}
+
 interface OcspLoadOptions {
   url: string;
   certificate: Uint8Array;
   issuerCertificate: Uint8Array;
+  signal?: AbortSignal;
 }
 
 interface HttpOptions {
@@ -76,6 +84,7 @@ interface CacheStore {
 interface VerifyOptions {
   certificateChain: readonly CertificateInput[];
   checkDate?: Date;
+  signal?: AbortSignal;
 }
 
 interface TrustValidator {
@@ -108,6 +117,7 @@ function createMemoryCache(options?: {
 | `onDiagnostic` | No callback | Receive detailed revocation and cache diagnostics using your application's logger. |
 | `verify().certificateChain`      | Required                       | Leaf certificate followed by intermediates.                                            |
 | `verify().checkDate`             | Current time from `now`      | Date at which to validate the path and revocation evidence.                            |
+| `verify().signal`                | None                         | AbortSignal that cancels this verification; rejection is an `AbortError`.              |
 | `createMemoryCache().maxEntries` | `256`                        | Maximum entries; the oldest inserted entry is evicted when full.                       |
 | `createMemoryCache().now`        | `Date.now`                   | Clock used to expire entries in that memory store.                                     |
 
@@ -399,6 +409,30 @@ Before using the library with a trust community or CA, confirm that its PKI
 publishes evidence within this supported scope. Rejecting unsupported evidence
 avoids accepting an unverified status, but can also reject otherwise valid
 certificates.
+
+## Concurrency, early rejection, and cancellation
+
+After the path validates, the leaf and every intermediate start revocation
+pipelines concurrently. Within each certificate, mechanisms and their URLs keep
+the policy's ordered, sequential fallback; there is no cross-certificate barrier
+before validating a response or trying the next source.
+
+Overall success still requires every non-anchor certificate to satisfy the
+policy. The validator races only an authenticated `revoked` result against
+completion of all pipelines:
+
+- Once an authenticated revoked result is confirmed, `verify()` returns it
+  without waiting for stalled loaders or cache writes from other certificates.
+- A slow or signal-ignoring custom loader cannot delay that confirmed failure.
+- Results that arrive after the failure has been returned cannot override it.
+- Revoked cache writes run in the background with their rejections observed;
+  good cache writes keep the existing behavior.
+
+Pass an `AbortSignal` to `verify()` to cancel the whole verification. Built-in
+HTTP loaders combine it with their request deadline; custom loaders receive it
+as `options.signal` (CRL) or `options.signal` (OCSP) and should honor it. An
+external cancellation rejects with an `AbortError`; it never becomes a
+successful result.
 
 The library validates certificate trust and revocation. Applications remain
 responsible for their protocol rules, such as matching a JWT issuer to a
