@@ -15,6 +15,9 @@ Worker execution is an optional subpath and requires installing `piscina`:
 npm install piscina
 ```
 
+Worker API migration: import `createWorkerPkiEngine` from `x509-trust/worker`; it is
+no longer exported by the main `x509-trust` entry point.
+
 ```typescript
 import { createTrustValidator } from "x509-trust";
 
