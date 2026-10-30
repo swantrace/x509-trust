@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { validateCertificatePath } from "../src/certificate-path.ts";
+import { validateCertificatePath } from "../src/engine/certificate-path.ts";
 
 function readFixture(name: string): string {
   return readFileSync(

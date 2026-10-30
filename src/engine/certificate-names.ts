@@ -5,9 +5,13 @@ import type { CertificateInput } from "./certificate-path.ts";
 const URI_GENERAL_NAME = 6;
 
 export function uriSubjectAlternativeNames(certificate: Certificate): string[] {
-  const extension = certificate.extensions?.find(
+  const matches = (certificate.extensions ?? []).filter(
     (entry) => entry.extnID === id_SubjectAltName
   );
+  if (matches.length > 1) {
+    throw new TypeError("Duplicate subject alternative name extension");
+  }
+  const extension = matches[0];
   if (!extension) return [];
 
   const names = extension.parsedValue;

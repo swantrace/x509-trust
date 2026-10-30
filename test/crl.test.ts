@@ -12,7 +12,7 @@ import {
   id_IssuingDistributionPoint,
   id_KeyUsage
 } from "pkijs";
-import { validateCrl } from "../src/crl.ts";
+import { validateCrl } from "../src/engine/crl.ts";
 
 function readFixture(name: string): string {
   return readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");

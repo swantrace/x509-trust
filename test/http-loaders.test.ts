@@ -6,7 +6,7 @@ import http, { type RequestListener } from "node:http";
 import type { AddressInfo } from "node:net";
 import { type TestContext, test } from "node:test";
 import { BasicOCSPResponse, OCSPRequest, OCSPResponse } from "pkijs";
-import { createHttpLoaders } from "../src/http-loaders.ts";
+import { createHttpLoaders } from "../src/evidence/http-loaders.ts";
 import { createTrustValidator } from "../src/index.ts";
 
 function fixture(name: string) {
@@ -192,12 +192,23 @@ test("default public loaders fall back from unavailable OCSP to downloaded CRLs"
     ).valid,
     true
   );
-  assert.deepEqual(requests, [
-    "POST /intermediate",
-    "GET /intermediate.crl",
-    "POST /root",
-    "GET /root.crl"
-  ]);
+  // The two certificate pipelines run concurrently; each must try its OCSP
+  // endpoint before falling back to its CRL endpoint.
+  assert.equal(requests.length, 4);
+  assert.deepEqual(
+    new Set(requests),
+    new Set([
+      "POST /intermediate",
+      "GET /intermediate.crl",
+      "POST /root",
+      "GET /root.crl"
+    ])
+  );
+  assert.ok(
+    requests.indexOf("POST /intermediate") <
+      requests.indexOf("GET /intermediate.crl")
+  );
+  assert.ok(requests.indexOf("POST /root") < requests.indexOf("GET /root.crl"));
 });
 
 test("rejects redirects and HTTP errors without following their Location", async (t) => {
@@ -247,6 +258,25 @@ test("the deadline includes a stalled response body", async (t) => {
     timeoutMs: 50
   });
   await assert.rejects(loaders.loadCrl(origin), /abort/i);
+});
+
+test("an external AbortSignal cancels a built-in HTTP request", async (t) => {
+  const requestStarted = new Promise<void>((resolve) => {
+    t.after(() => resolve());
+  });
+  const origin = await startServer(t, (_request, response) => {
+    response.writeHead(200);
+    response.flushHeaders();
+    requestStarted.then(() => response.end());
+  });
+  const loaders = createHttpLoaders({
+    allowPrivateAddresses: true,
+    timeoutMs: 5000
+  });
+  const controller = new AbortController();
+  const pending = loaders.loadCrl(origin, { signal: controller.signal });
+  controller.abort();
+  await assert.rejects(pending, /abort/i);
 });
 
 test("rejects non-public literal addresses and unsafe URLs before opening a connection", async (t) => {

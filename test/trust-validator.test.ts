@@ -72,6 +72,57 @@ test("public API validates a full path using CRLs for leaf and intermediate", as
     "http://crl.example.test/intermediate.crl",
     "http://crl.example.test/root.crl"
   ]);
+  assert.ok(result.valid);
+  assert.equal(
+    result.leafCertificate.fingerprint256,
+    new X509Certificate(leaf).fingerprint256
+  );
+  assert.deepEqual(result.leafCertificate.uriSubjectAlternativeNames, [
+    "https://client.example.org/app"
+  ]);
+  assert.deepEqual(result.leafCertificate.keyUsages, ["digitalSignature"]);
+  assert.deepEqual(
+    result.evidence.map(({ certificateIndex, mechanism, status }) => ({
+      certificateIndex,
+      mechanism,
+      status
+    })),
+    [
+      { certificateIndex: 0, mechanism: "crl", status: "good" },
+      { certificateIndex: 1, mechanism: "crl", status: "good" }
+    ]
+  );
+  assert.ok(
+    result.evidence.every(
+      (entry) => entry.authenticated && entry.fresh && entry.checkedAtMs > 0
+    )
+  );
+  assert.equal(result.findings.length, 2);
+  assert.deepEqual(
+    result.findings.map((entry) => entry.certificateIndex),
+    [0, 1]
+  );
+  for (const finding of result.findings) {
+    assert.equal(finding.pathValid, true);
+    assert.equal(finding.revocation.crl.length, 1);
+    assert.equal(finding.revocation.crl[0].status, "good");
+    assert.equal(finding.revocation.crl[0].authenticated, true);
+    assert.equal(finding.revocation.crl[0].fresh, true);
+    assert.deepEqual(finding.revocation.ocsp, []);
+  }
+
+  // Results are independent snapshots: mutating them must not change trust.
+  result.leafCertificate.der.fill(0);
+  result.leafCertificate.publicKeySpkiDer.fill(0);
+  result.certificatePath[0].fill(0);
+  const repeated = await validator.verify({
+    certificateChain: [leaf, intermediate]
+  });
+  assert.equal(repeated.valid, true);
+  assert.equal(
+    repeated.leafCertificate.fingerprint256,
+    new X509Certificate(leaf).fingerprint256
+  );
 });
 
 test("public API supports OCSP callbacks with DER certificate and issuer context", async () => {
@@ -102,7 +153,7 @@ test("public API supports OCSP callbacks with DER certificate and issuer context
   ]);
 });
 
-test("rejects a revoked client and stops before checking the intermediate", async () => {
+test("reports revoked while other certificate pipelines may be in flight", async () => {
   let loads = 0;
   const validator = createTrustValidator({
     trustAnchors: [root],
@@ -119,7 +170,15 @@ test("rejects a revoked client and stops before checking the intermediate", asyn
   assert.equal(result.valid, false);
   assert.equal(result.code, "CERTIFICATE_REVOKED");
   assert.equal(result.certificateIndex, 0);
-  assert.equal(loads, 1);
+  assert.ok(loads >= 1);
+  assert.equal("leafCertificate" in result, false);
+  assert.equal(result.evidence?.length, 1);
+  assert.deepEqual(
+    result.evidence?.map(({ mechanism, status }) => ({ mechanism, status })),
+    [{ mechanism: "crl", status: "revoked" }]
+  );
+  assert.equal(result.findings?.[0].revocation.crl[0].status, "revoked");
+  assert.equal(result.findings?.[0].revocation.crl[0].authenticated, true);
 });
 
 test("a good leaf status is insufficient when intermediate status cannot be established", async () => {
@@ -138,6 +197,9 @@ test("a good leaf status is insufficient when intermediate status cannot be esta
   assert.equal(result.valid, false);
   assert.equal(result.code, "REVOCATION_STATUS_UNKNOWN");
   assert.equal(result.certificateIndex, 1);
+  assert.equal(result.findings?.[1].revocation.crl[0].status, "unknown");
+  assert.equal(result.findings?.[1].revocation.crl[0].authenticated, false);
+  assert.equal(result.findings?.[1].revocation.crl[0].fresh, false);
 });
 
 test("rejects invalid, untrusted and expired paths before calling loaders", async () => {
@@ -174,6 +236,7 @@ test("rejects invalid, untrusted and expired paths before calling loaders", asyn
   });
   assert.equal(expired.valid, false);
   assert.equal(expired.code, "INVALID_CERTIFICATE_PATH");
+  assert.equal("leafCertificate" in expired, false);
   assert.equal(loads, 0);
 });
 
@@ -247,7 +310,11 @@ test("never overrides an authenticated revoked response with a good CRL", async 
   });
   assert.equal(result.valid, false);
   assert.equal(result.code, "CERTIFICATE_REVOKED");
-  assert.equal(crlLoads, 0);
+  assert.deepEqual(
+    result.evidence?.map(({ mechanism, status }) => ({ mechanism, status })),
+    [{ mechanism: "ocsp", status: "revoked" }]
+  );
+  assert.ok(crlLoads <= 1);
 });
 
 test("returns a validation failure when all evidence is unusable", async () => {

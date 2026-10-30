@@ -16,7 +16,7 @@ import {
   id_CRLDistributionPoints,
   RelativeDistinguishedNames
 } from "pkijs";
-import { getRevocationEndpoints } from "../src/revocation-endpoints.ts";
+import { getRevocationEndpoints } from "../src/engine/revocation-endpoints.ts";
 
 for (const [name, issuer] of [
   ["leaf", "intermediate"],

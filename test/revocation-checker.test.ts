@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { Certificate, CertificateRevocationList } from "pkijs";
-import { type CacheStore, createMemoryCache } from "../src/cache.ts";
-import { createRevocationChecker } from "../src/revocation-checker.ts";
+import { CertificateRevocationList } from "pkijs";
+import { type CacheStore, createMemoryCache } from "../src/evidence/cache.ts";
+import { createRevocationChecker } from "../src/evidence/revocation-checker.ts";
 
-function readCertificate(name: string): Certificate {
+function readCertificateDer(name: string): Uint8Array {
   const pem = readFileSync(new URL(`./fixtures/${name}.pem`, import.meta.url));
-  return Certificate.fromBER(new X509Certificate(pem).raw);
+  return Uint8Array.from(new X509Certificate(pem).raw);
 }
 
 function readCrl(name: string) {
@@ -23,8 +23,8 @@ function readOcsp(name: string) {
   return readFileSync(new URL(`./fixtures/ocsp/${name}.der`, import.meta.url));
 }
 
-const certificate = readCertificate("leaf");
-const issuerCertificate = readCertificate("intermediate");
+const certificateDer = readCertificateDer("leaf");
+const issuerDer = readCertificateDer("intermediate");
 const fixtureTime = Date.parse(
   readFileSync(
     new URL("./fixtures/validation-time.txt", import.meta.url),
@@ -33,8 +33,8 @@ const fixtureTime = Date.parse(
 );
 const crl = readCrl("intermediate-revoked");
 const baseOptions = {
-  certificate,
-  issuerCertificate,
+  certificateDer,
+  issuerDer,
   source: "http://crl.example.test/intermediate.crl"
 };
 
@@ -53,7 +53,7 @@ test("reuses a CRL across certificates but checks each certificate's status", as
     (
       await checker.checkCrl({
         ...baseOptions,
-        certificate: readCertificate("revoked-leaf"),
+        certificateDer: readCertificateDer("revoked-leaf"),
         load
       })
     ).status,
@@ -81,7 +81,7 @@ test("isolates OCSP responses by certificate, issuer and source", async () => {
     (
       await checker.checkOcsp({
         ...options,
-        certificate: readCertificate("revoked-leaf"),
+        certificateDer: readCertificateDer("revoked-leaf"),
         load: async () => {
           loads++;
           return readOcsp("revoked");
@@ -103,8 +103,8 @@ test("isolates OCSP responses by certificate, issuer and source", async () => {
     (
       await checker.checkOcsp({
         ...options,
-        certificate: issuerCertificate,
-        issuerCertificate: readCertificate("root"),
+        certificateDer: readCertificateDer("intermediate"),
+        issuerDer: readCertificateDer("root"),
         load: async () => {
           loads++;
           return readOcsp("intermediate-good");
@@ -286,7 +286,10 @@ test("rechecks cached evidence when an explicit validation date changes", async 
   };
   await checker.checkCrl(options);
   const nextUpdate = CertificateRevocationList.fromBER(crl).nextUpdate!.value;
-  const result = await checker.checkCrl({ ...options, checkDate: nextUpdate });
+  const result = await checker.checkCrl({
+    ...options,
+    checkDateMs: nextUpdate.getTime()
+  });
   assert.equal(result.status, "unknown");
   assert.equal(result.code, "CRL_EXPIRED");
   assert.equal(loads, 2);

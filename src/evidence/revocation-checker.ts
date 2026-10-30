@@ -1,42 +1,44 @@
 import { createHash } from "node:crypto";
-import type { Certificate } from "pkijs";
-import { type CacheStore, createMemoryCache } from "./cache.ts";
-import { type CrlValidationResult, validateCrl } from "./crl.ts";
 import {
   createDiagnosticReporter,
   type DiagnosticCallback,
   type DiagnosticEvent
-} from "./diagnostics.ts";
-import { type OcspValidationResult, validateOcsp } from "./ocsp.ts";
+} from "../diagnostics.ts";
+import type { CrlValidationResult } from "../engine/crl.ts";
+import type { OcspValidationResult } from "../engine/ocsp.ts";
+import { createInlinePkiEngine, type PkiEngine } from "../engine/pki-engine.ts";
+import { type CacheStore, createMemoryCache } from "./cache.ts";
 
 const DEFAULT_MAX_CACHE_AGE_MS = 60 * 60 * 1000;
 
 interface RevocationCheckOptions {
-  certificate: Certificate;
-  issuerCertificate: Certificate;
+  certificateDer: Uint8Array;
+  issuerDer: Uint8Array;
   source: string;
-  load: () => Promise<Uint8Array>;
-  checkDate?: Date;
+  load: (signal?: AbortSignal) => Promise<Uint8Array>;
+  signal?: AbortSignal;
+  checkDateMs?: number;
   certificateIndex?: number;
+  ocspRequestDer?: Uint8Array;
 }
 
 type RevocationResult =
   | { status: "good" | "revoked"; nextUpdate: Date }
   | { status: "unknown"; code: string; message: string };
 
-function certificateDer(certificate: Certificate): string {
-  return Buffer.from(certificate.toSchema(true).toBER(false)).toString(
-    "base64"
-  );
+function digestBytes(value: Uint8Array): string {
+  return createHash("sha256").update(value).digest("base64url");
 }
 
 export function createRevocationChecker({
+  engine = createInlinePkiEngine(),
   now = Date.now,
   cache = createMemoryCache({ now }),
   maxCacheAgeMs = DEFAULT_MAX_CACHE_AGE_MS,
   cacheKeyPrefix = "x509-trust:revocation:v1",
   onDiagnostic
 }: {
+  engine?: PkiEngine;
   now?: () => number;
   cache?: CacheStore;
   maxCacheAgeMs?: number;
@@ -58,9 +60,14 @@ export function createRevocationChecker({
   ): string {
     const components = [
       options.source,
-      certificateDer(options.issuerCertificate)
+      digestBytes(options.issuerDer),
+      ...(kind === "ocsp"
+        ? [
+            digestBytes(options.certificateDer),
+            options.ocspRequestDer ? digestBytes(options.ocspRequestDer) : ""
+          ]
+        : [])
     ];
-    if (kind === "ocsp") components.push(certificateDer(options.certificate));
     const digest = createHash("sha256")
       .update(JSON.stringify(components))
       .digest("base64url");
@@ -98,7 +105,7 @@ export function createRevocationChecker({
         entry.cachedAt <= now() &&
         entry.cachedAt + maxCacheAgeMs > now()
       ) {
-        return Buffer.from(entry.der, "base64");
+        return Uint8Array.from(Buffer.from(entry.der, "base64"));
       }
     } catch {
       notify({
@@ -116,9 +123,10 @@ export function createRevocationChecker({
 
   async function check<T extends RevocationResult>(
     key: string,
-    load: () => Promise<Uint8Array>,
+    load: (signal?: AbortSignal) => Promise<Uint8Array>,
     validate: (data: Uint8Array) => Promise<T>,
-    notify: Report
+    notify: Report,
+    signal?: AbortSignal
   ): Promise<T> {
     const cached = await read(key, notify);
     if (cached !== null) {
@@ -150,7 +158,7 @@ export function createRevocationChecker({
     let result: T;
     let data: Uint8Array;
     try {
-      data = Uint8Array.from(await load());
+      data = Uint8Array.from(await load(signal));
       result = await validate(data);
     } catch (error) {
       notify({
@@ -174,22 +182,28 @@ export function createRevocationChecker({
       );
       const ttlMs = Math.floor(expiresAt - now());
       if (ttlMs > 0) {
-        try {
-          await cache.set(
-            key,
-            JSON.stringify({
-              der: Buffer.from(data).toString("base64"),
-              expiresAt,
-              cachedAt
-            }),
-            ttlMs
-          );
-        } catch {
-          notify({
-            event: "cache_error",
-            message: "Unable to cache validated evidence"
-          });
-        }
+        const write = async () => {
+          try {
+            await cache.set(
+              key,
+              JSON.stringify({
+                der: Buffer.from(data).toString("base64"),
+                expiresAt,
+                cachedAt
+              }),
+              ttlMs
+            );
+          } catch {
+            notify({
+              event: "cache_error",
+              message: "Unable to cache validated evidence"
+            });
+          }
+        };
+        // A revoked result must not wait for a slow cache backend. The write is
+        // observed via its own catch; good results keep the previous behavior.
+        if (result.status === "revoked") void write();
+        else await write();
       }
     }
     return result;
@@ -199,49 +213,53 @@ export function createRevocationChecker({
     async checkCrl(
       options: RevocationCheckOptions
     ): Promise<CrlValidationResult> {
-      const checkDate = options.checkDate;
-      if (checkDate && Number.isNaN(checkDate.getTime()))
+      const checkDateMs = options.checkDateMs;
+      if (checkDateMs !== undefined && !Number.isFinite(checkDateMs))
         throw new TypeError("checkDate must be a valid date");
       return check(
         cacheKey("crl", options),
         options.load,
         (crl) =>
-          validateCrl({
-            certificate: options.certificate,
-            issuerCertificate: options.issuerCertificate,
+          engine.validateCrl({
+            certificateDer: options.certificateDer,
+            issuerDer: options.issuerDer,
             crl,
-            checkDate: checkDate ?? new Date(now())
+            checkDateMs: checkDateMs ?? now(),
+            signal: options.signal
           }),
         (event) =>
           report({
             ...event,
             mechanism: "crl",
             certificateIndex: options.certificateIndex
-          })
+          }),
+        options.signal
       );
     },
     async checkOcsp(
       options: RevocationCheckOptions
     ): Promise<OcspValidationResult> {
-      const checkDate = options.checkDate;
-      if (checkDate && Number.isNaN(checkDate.getTime()))
+      const checkDateMs = options.checkDateMs;
+      if (checkDateMs !== undefined && !Number.isFinite(checkDateMs))
         throw new TypeError("checkDate must be a valid date");
       return check(
         cacheKey("ocsp", options),
         options.load,
         (response) =>
-          validateOcsp({
-            certificate: options.certificate,
-            issuerCertificate: options.issuerCertificate,
+          engine.validateOcsp({
+            certificateDer: options.certificateDer,
+            issuerDer: options.issuerDer,
             response,
-            checkDate: checkDate ?? new Date(now())
+            checkDateMs: checkDateMs ?? now(),
+            signal: options.signal
           }),
         (event) =>
           report({
             ...event,
             mechanism: "ocsp",
             certificateIndex: options.certificateIndex
-          })
+          }),
+        options.signal
       );
     }
   };

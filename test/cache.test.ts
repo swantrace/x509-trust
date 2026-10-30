@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createMemoryCache } from "../src/cache.ts";
+import { createMemoryCache } from "../src/evidence/cache.ts";
 
 test("memory entries expire at their TTL boundary", async () => {
   let time = 1000;
