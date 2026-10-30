@@ -45,11 +45,8 @@ export {
   type CompiledValidationProfile,
   compileValidationProfile,
   DEFAULT_VALIDATION_PROFILE,
-  PROFILE_CAPABILITIES,
-  type ProfileCapability,
   type ProfileSource,
   type ProfileVersion,
-  profileCapabilities,
   type RequiredEvidence,
   type RevocationMechanism,
   type ValidationProfileInput

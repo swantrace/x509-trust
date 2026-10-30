@@ -4,20 +4,6 @@ import { invalidProfile, unsupportedProfile } from "../errors.ts";
 export type RevocationMechanism = "crl" | "ocsp";
 export type RequiredEvidence = "any" | "crl" | "ocsp" | "both";
 export type ProfileVersion = string | number;
-export type ProfileCapability =
-  | "revocation:any"
-  | "revocation:crl"
-  | "revocation:ocsp"
-  | "revocation:both"
-  | "revocation:non-anchor-chain"
-  | "revocation:require-next-update"
-  | "revocation:zero-clock-skew"
-  | "rules:leaf-key-usage"
-  | "rules:leaf-extended-key-usage"
-  | "rules:required-certificate-policy-oids"
-  | "rules:max-path-depth"
-  | "rules:required-rule-names";
-
 export interface ProfileSource {
   uri: string;
   version?: string;
@@ -31,8 +17,6 @@ export interface ValidationProfileInput {
   versionOrder?: number;
   source: string | ProfileSource;
   anchorSetId: string;
-  /** Capabilities this profile explicitly requires the engine to support. */
-  requiredCapabilities?: readonly ProfileCapability[];
   revocation?: {
     requiredEvidence?: RequiredEvidence;
     sourceOrder?: readonly RevocationMechanism[];
@@ -56,10 +40,6 @@ export interface CompiledValidationProfile {
   readonly versionOrder: number;
   readonly source: Readonly<ProfileSource>;
   readonly anchorSetId: string;
-  /** Capabilities explicitly declared by the caller. */
-  readonly requiredCapabilities: readonly ProfileCapability[];
-  /** Capabilities actually exercised by the compiled profile. */
-  readonly capabilities: readonly ProfileCapability[];
   readonly revocation: Readonly<{
     requiredEvidence: RequiredEvidence;
     sourceOrder: readonly RevocationMechanism[];
@@ -77,25 +57,6 @@ export interface CompiledValidationProfile {
   }>;
 }
 
-export const PROFILE_CAPABILITIES: readonly ProfileCapability[] = Object.freeze(
-  [
-    "revocation:any",
-    "revocation:crl",
-    "revocation:ocsp",
-    "revocation:both",
-    "revocation:non-anchor-chain",
-    "revocation:require-next-update",
-    "revocation:zero-clock-skew",
-    "rules:leaf-key-usage",
-    "rules:leaf-extended-key-usage",
-    "rules:required-certificate-policy-oids",
-    "rules:max-path-depth",
-    "rules:required-rule-names"
-  ] as const
-);
-
-const SUPPORTED_CAPABILITIES = new Set<string>(PROFILE_CAPABILITIES);
-
 export interface CompileProfileOptions {
   registeredRuleNames?: readonly string[];
 }
@@ -110,14 +71,6 @@ export const DEFAULT_VALIDATION_PROFILE: ValidationProfileInput = Object.freeze(
       version: "1"
     }),
     anchorSetId: "explicit",
-    requiredCapabilities: Object.freeze([
-      "revocation:any",
-      "revocation:crl",
-      "revocation:ocsp",
-      "revocation:non-anchor-chain",
-      "revocation:require-next-update",
-      "revocation:zero-clock-skew"
-    ] as const),
     revocation: Object.freeze({
       requiredEvidence: "any" as const,
       sourceOrder: Object.freeze(["ocsp", "crl"] as const),
@@ -128,28 +81,6 @@ export const DEFAULT_VALIDATION_PROFILE: ValidationProfileInput = Object.freeze(
     })
   }
 );
-
-export const profileCapabilities = Object.freeze({
-  supported: PROFILE_CAPABILITIES,
-  revocationScope: Object.freeze(["non-anchor-chain"] as const),
-  requiredEvidence: Object.freeze(["any", "crl", "ocsp", "both"] as const),
-  rules: Object.freeze([
-    "leafKeyUsage",
-    "leafExtendedKeyUsage",
-    "requiredCertificatePolicyOids",
-    "maxPathDepth",
-    "requiredRuleNames"
-  ] as const),
-  unsupported: Object.freeze({
-    fullPathCertificatePolicyProcessing:
-      "Certificate policy OIDs are read from the leaf only; no RFC 5280 policy tree result is claimed.",
-    delegatedOcsp: "Delegated OCSP responders are not verified.",
-    deltaOrIndirectCrl: "Delta and indirect CRLs are rejected.",
-    ocspWithoutNextUpdate: "OCSP responses must carry nextUpdate.",
-    clockSkew: "Non-zero revocation clock skew is not configurable.",
-    leafOnlyRevocation: "Revocation always covers every non-anchor certificate."
-  })
-});
 
 const REVOCATION_MECHANISMS = new Set<RevocationMechanism>(["crl", "ocsp"]);
 const REQUIRED_EVIDENCE = new Set<RequiredEvidence>([
@@ -294,18 +225,6 @@ function compileProfileSource(value: unknown): ProfileSource {
   };
 }
 
-function copyCapabilities(value: unknown, path: string): ProfileCapability[] {
-  const capabilities = copyStringList(value, path);
-  for (const capability of capabilities) {
-    if (!SUPPORTED_CAPABILITIES.has(capability)) {
-      throw unsupportedProfile(
-        `Unsupported profile capability "${capability}"`
-      );
-    }
-  }
-  return capabilities as ProfileCapability[];
-}
-
 export function compileValidationProfile(
   input: unknown = DEFAULT_VALIDATION_PROFILE,
   { registeredRuleNames = [] }: CompileProfileOptions = {}
@@ -316,7 +235,6 @@ export function compileValidationProfile(
     "versionOrder",
     "source",
     "anchorSetId",
-    "requiredCapabilities",
     "revocation",
     "rules"
   ]);
@@ -327,13 +245,6 @@ export function compileValidationProfile(
   );
   const source = compileProfileSource(input.source);
   const anchorSetId = nonEmptyString(input.anchorSetId, "profile.anchorSetId");
-  const requiredCapabilities =
-    input.requiredCapabilities === undefined
-      ? []
-      : copyCapabilities(
-          input.requiredCapabilities,
-          "profile.requiredCapabilities"
-        );
 
   let requiredEvidence: RequiredEvidence = "any";
   let sourceOrder: RevocationMechanism[] = ["ocsp", "crl"];
@@ -491,31 +402,12 @@ export function compileValidationProfile(
     }
   }
 
-  const capabilities = new Set<ProfileCapability>([
-    `revocation:${requiredEvidence}`,
-    "revocation:non-anchor-chain",
-    "revocation:require-next-update",
-    "revocation:zero-clock-skew"
-  ]);
-  for (const mechanism of sourceOrder) {
-    capabilities.add(`revocation:${mechanism}`);
-  }
-  if (rules?.leafKeyUsage) capabilities.add("rules:leaf-key-usage");
-  if (rules?.leafExtendedKeyUsage)
-    capabilities.add("rules:leaf-extended-key-usage");
-  if (rules?.requiredCertificatePolicyOids)
-    capabilities.add("rules:required-certificate-policy-oids");
-  if (rules?.maxPathDepth) capabilities.add("rules:max-path-depth");
-  if (rules?.requiredRuleNames) capabilities.add("rules:required-rule-names");
-
   return deepFreeze({
     id,
     version,
     versionOrder,
     source,
     anchorSetId,
-    requiredCapabilities,
-    capabilities: [...capabilities],
     revocation: {
       requiredEvidence,
       sourceOrder,

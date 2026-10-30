@@ -11,7 +11,7 @@ revocation evidence never becomes success.
 - DER or PEM certificate input.
 - CRL and OCSP verification signed by the certificate issuer.
 - Fail-closed revocation requirements with explicit evidence choices.
-- Immutable validation profiles with explicit capabilities and rules.
+- Immutable validation profiles with declarative rules.
 - Concurrent per-certificate evidence collection with authenticated-revoked
   early exit and `AbortSignal` cancellation.
 - Bounded shared evidence provider with per-origin limits and single-flight.
@@ -137,20 +137,6 @@ interface ProfileSource {
   effectiveDate?: string;
 }
 
-type ProfileCapability =
-  | "revocation:any"
-  | "revocation:crl"
-  | "revocation:ocsp"
-  | "revocation:both"
-  | "revocation:non-anchor-chain"
-  | "revocation:require-next-update"
-  | "revocation:zero-clock-skew"
-  | "rules:leaf-key-usage"
-  | "rules:leaf-extended-key-usage"
-  | "rules:required-certificate-policy-oids"
-  | "rules:max-path-depth"
-  | "rules:required-rule-names";
-
 interface ValidationProfileInput {
   id: string;
   version: ProfileVersion;
@@ -158,7 +144,6 @@ interface ValidationProfileInput {
   versionOrder?: number;
   source: string | ProfileSource;
   anchorSetId: string;
-  requiredCapabilities?: readonly ProfileCapability[];
   revocation?: {
     requiredEvidence?: "any" | "crl" | "ocsp" | "both";
     sourceOrder?: readonly ("crl" | "ocsp")[];
@@ -184,9 +169,6 @@ created. Mutating the caller's object afterwards has no effect.
 - Numeric versions default `versionOrder` to the version number.
 - String versions require a positive integer `versionOrder`.
 - `source` accepts a URI string or `{ uri, version?, effectiveDate? }`.
-- `requiredCapabilities` is checked against `PROFILE_CAPABILITIES`.
-- `capabilities` on the compiled profile reports what the configuration actually
-  exercises.
 
 ```typescript
 import { createTrustValidator } from "x509-trust";
@@ -203,7 +185,6 @@ const validator = createTrustValidator({
       effectiveDate: "2026-01-01",
     },
     anchorSetId: "example:root-2026",
-    requiredCapabilities: ["revocation:both"],
     revocation: {
       requiredEvidence: "both",
       sourceOrder: ["crl", "ocsp"],
@@ -237,9 +218,9 @@ requirement is satisfied; the library does not claim that unqueried sources agre
 with the returned result. Unknown, unavailable, unauthenticated, expired, and
 unsupported evidence never establish good status.
 
-Invalid profiles throw `ProfileError` with `INVALID_PROFILE`. A mandatory
-capability that the engine does not implement throws `UNSUPPORTED_PROFILE`.
-Disabling a loader that the profile requires is rejected at configuration time.
+Invalid profiles throw `ProfileError` with `INVALID_PROFILE`. Unsupported
+configuration values or rule names throw `UNSUPPORTED_PROFILE`. Disabling a
+loader that the profile requires is rejected at configuration time.
 
 ### Profile files
 
@@ -483,8 +464,8 @@ Configuration errors are thrown:
 
 - `ProfileError` with `INVALID_PROFILE` for malformed profiles, registration, or
   loader configuration.
-- `ProfileError` with `UNSUPPORTED_PROFILE` for a mandatory capability or rule
-  name that has no implementation.
+- `ProfileError` with `UNSUPPORTED_PROFILE` for an unsupported configuration
+  value or rule name that has no implementation.
 - `TypeError` for invalid option values.
 - Cancellation rejects with a `DOMException` named `AbortError`.
 

@@ -7,14 +7,6 @@
     "version": "1"
   },
   "anchorSetId": "explicit",
-  "requiredCapabilities": [
-    "revocation:any",
-    "revocation:crl",
-    "revocation:ocsp",
-    "revocation:non-anchor-chain",
-    "revocation:require-next-update",
-    "revocation:zero-clock-skew"
-  ],
   "revocation": {
     "requiredEvidence": "any",
     "sourceOrder": ["ocsp", "crl"],

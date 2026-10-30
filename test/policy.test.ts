@@ -7,7 +7,6 @@ import {
   createTrustValidator,
   DEFAULT_VALIDATION_PROFILE,
   ProfileError,
-  profileCapabilities,
   type ValidationProfileInput
 } from "../src/index.ts";
 
@@ -169,7 +168,7 @@ test("rejects duplicate or unsupported source orders that miss required evidence
   assert.deepEqual(both.revocation.sourceOrder, ["ocsp", "crl"]);
 });
 
-test("rejects mandatory capabilities that are not implemented", () => {
+test("rejects unsupported revocation configuration", () => {
   const cases: Array<Partial<ValidationProfileInput["revocation"]>> = [
     { requiredEvidence: "dns" as never },
     { onUnknown: "allow" as never },
@@ -230,16 +229,6 @@ test("validates rule values, OIDs and registered rule names", () => {
     { registeredRuleNames: ["policy-set-check"] }
   );
   assert.deepEqual(policy.rules?.requiredRuleNames, ["policy-set-check"]);
-});
-
-test("exposes the supported capability catalog without claiming unimplemented semantics", () => {
-  assert.deepEqual(profileCapabilities.requiredEvidence, [
-    "any",
-    "crl",
-    "ocsp",
-    "both"
-  ]);
-  assert.equal(profileCapabilities.unsupported.delegatedOcsp.length > 0, true);
 });
 
 test("rejects invalid policy configuration before any certificate I/O", async () => {
@@ -373,45 +362,4 @@ test("compiles structured policy sources and ordered string versions", () => {
       ProfileError
     );
   }
-});
-
-test("declares and validates policy capabilities explicitly", () => {
-  const policy = compileValidationProfile({
-    ...validPolicy(),
-    requiredCapabilities: ["revocation:crl", "rules:leaf-key-usage"],
-    rules: { leafKeyUsage: ["digitalSignature"] }
-  });
-  assert.deepEqual(policy.requiredCapabilities, [
-    "revocation:crl",
-    "rules:leaf-key-usage"
-  ]);
-  assert.ok(policy.capabilities.includes("revocation:any"));
-  assert.ok(policy.capabilities.includes("revocation:crl"));
-  assert.ok(policy.capabilities.includes("revocation:ocsp"));
-  assert.ok(policy.capabilities.includes("rules:leaf-key-usage"));
-
-  assert.throws(
-    () =>
-      compileValidationProfile({
-        ...validPolicy(),
-        requiredCapabilities: ["delegated-ocsp" as never]
-      }),
-    (error: unknown) => {
-      assert.ok(error instanceof ProfileError);
-      assert.equal(error.code, "UNSUPPORTED_PROFILE");
-      return true;
-    }
-  );
-  assert.throws(
-    () =>
-      compileValidationProfile({
-        ...validPolicy(),
-        requiredCapabilities: ["revocation:crl", "revocation:crl"]
-      }),
-    (error: unknown) => {
-      assert.ok(error instanceof ProfileError);
-      assert.equal(error.code, "INVALID_PROFILE");
-      return true;
-    }
-  );
 });

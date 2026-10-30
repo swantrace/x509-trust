@@ -26,7 +26,6 @@ const profile: ValidationProfileInput = {
   versionOrder: 1,
   source: { uri: frameworkIdentifier },
   anchorSetId: "udap:approved-roots",
-  requiredCapabilities: ["revocation:both"],
   revocation: {
     requiredEvidence: "both",
     sourceOrder: ["crl", "ocsp"]

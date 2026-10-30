@@ -35,8 +35,6 @@ registry.register({
   anchors are supplied separately, never by the request.
 - `version` may be a number or a string. String versions require a positive
   `versionOrder`; the registry selects the highest order as latest.
-- `requiredCapabilities` must use names from `PROFILE_CAPABILITIES`;
-  unsupported capabilities are rejected before certificate I/O.
 - Do not put private keys in this tree. Only public certificate fixtures or
   host-approved public trust bundles belong in `anchors/`.
 - A profile directory is configuration, not a statement of compliance. Do not
