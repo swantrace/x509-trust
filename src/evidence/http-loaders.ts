@@ -39,7 +39,7 @@ globalIpv6.addSubnet("2000::", 3, "ipv6");
 
 export interface CrlLoadOptions {
   signal?: AbortSignal;
-  // Context for provider single-flight keys; the HTTP loader ignores it.
+  // Identifies shared downloads in the provider; the HTTP loader ignores it.
   issuerCertificate?: Uint8Array;
 }
 

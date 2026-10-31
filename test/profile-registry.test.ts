@@ -276,7 +276,7 @@ test("selects the latest profile version unless an exact version is requested", 
   assert.equal(pinned.valid && pinned.profileVersion, 1);
 });
 
-test("a version registered during an in-flight request does not affect that request", async () => {
+test("a version registered during a pending request does not affect that request", async () => {
   let release!: () => void;
   let started!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -288,9 +288,9 @@ test("a version registered during an in-flight request does not affect that requ
   const { registry } = makeRegistry(
     [
       {
-        profileId: "in-flight",
+        profileId: "pending",
         chain: base,
-        profile: profileFor("in-flight:v1", { version: 1 })
+        profile: profileFor("pending:v1", { version: 1 })
       }
     ],
     async (url) => {
@@ -304,18 +304,18 @@ test("a version registered during an in-flight request does not affect that requ
     }
   );
   const pending = registry.verify({
-    profileId: "in-flight",
+    profileId: "pending",
     certificateChain: inputFor(base)
   });
   await startedSignal;
   registry.register({
     trustAnchors: [base.root.der],
     profile: {
-      ...profileFor("in-flight:v2", {
+      ...profileFor("pending:v2", {
         version: 2,
         rules: { leafExtendedKeyUsage: ["1.3.6.1.5.5.7.3.9"] }
       }),
-      id: "in-flight"
+      id: "pending"
     }
   });
   release();

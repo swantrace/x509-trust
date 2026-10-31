@@ -14,7 +14,7 @@ revocation evidence never becomes success.
 - Immutable validation profiles with declarative rules.
 - Concurrent per-certificate evidence collection with authenticated-revoked
   early exit and `AbortSignal` cancellation.
-- Bounded shared evidence provider with per-origin limits and single-flight.
+- Bounded evidence provider with per-origin limits and shared downloads.
 - Raw DER evidence cache.
 - Optional Piscina worker engine on a separate entry point.
 - Structured `findings` for diagnostics and audit.
@@ -131,7 +131,7 @@ function createMemoryCache(options?: {
 | `rules`                      | None                           | Trusted custom rule functions.                                           |
 | `loadCrl`                    | Built-in HTTP loader           | Override CRL retrieval, or `false` to disable CRL checks.              |
 | `loadOcsp`                   | Built-in HTTP loader           | Override OCSP retrieval, or `false` to disable OCSP checks.            |
-| `provider`                   | Per-validator provider         | Shared provider for request bounds and single-flight.                    |
+| `provider`                   | Per-validator provider         | Shared provider for request limits and shared downloads.                 |
 | `engine`                     | Inline engine                  | Worker-backed engine from `x509-trust/worker`.                         |
 | `http.timeoutMs`             | `5000`                       | Deadline for each HTTP request, including reading its body.              |
 | `http.maxResponseBytes`      | `5242880` (5 MiB)            | Maximum response body size per request.                                  |
@@ -344,7 +344,7 @@ const result = await registry.verify({
 - Unknown profiles return `UNKNOWN_PROFILE`; unknown versions return
   `UNKNOWN_PROFILE_VERSION`.
 - Each request selects its snapshot before awaiting validation, so registering a
-  new version does not change an in-flight request.
+  new version does not change a request already in progress.
 - Successful registry results include `profileId` and `profileVersion`.
 
 Profiles are independent. The same certificate SAN can appear in two profiles
@@ -540,8 +540,10 @@ publishes evidence within this supported scope.
 ## Shared evidence provider
 
 By default each validator creates its own evidence provider with finite limits.
-To enforce application-wide limits across validators or profiles, create one
-provider explicitly:
+Repeated `verify()` calls on the same validator share that provider. To share
+limits and pending downloads across multiple validators or profiles in the
+same process, create one provider during application setup and pass the same
+object to each validator:
 
 ```typescript
 import { createEvidenceProvider, createTrustValidator } from "x509-trust";
@@ -555,12 +557,26 @@ const provider = createEvidenceProvider({
   queueTimeoutMs: 30000,
 });
 
-const validator = createTrustValidator({
-  trustAnchors: [rootCertificate],
+const validatorA = createTrustValidator({
+  trustAnchors: [rootCertificateA],
+  provider,
+  deadlineMs: 60000,
+});
+
+const validatorB = createTrustValidator({
+  trustAnchors: [rootCertificateB],
   provider,
   deadlineMs: 60000,
 });
 ```
+
+Here `validatorA` and `validatorB` together can run at most eight downloads. With
+separate providers, each would have its own eight-download limit and could
+download the same evidence independently. The same provider can also be passed
+to `createValidationProfileRegistry({ provider })` to share it across registered
+profiles. Validation still uses each validator's own trust anchors and profile;
+the `cache` option controls evidence caching separately. Separate processes or
+application replicas have independent provider instances and limits.
 
 | Provider option        | Default   | Meaning                                              |
 | ---------------------- | --------- | ---------------------------------------------------- |
@@ -572,16 +588,17 @@ const validator = createTrustValidator({
 Queue-full, queue-timeout, and verification-deadline conditions return
 `RESOURCE_LIMIT_EXCEEDED`.
 
-The provider runs single-flight only for raw downloads. A CRL flight is keyed by
-URL, issuer, and provider instance; an OCSP flight also includes the target
-certificate and request DER. Different provider instances do not share work, so
-separate loader, origin, or SSRF configurations stay isolated.
+The provider shares matching downloads while they are pending. CRL downloads
+are matched by URL and issuer within the same provider instance; OCSP downloads
+also require the same target certificate and request DER. Different provider
+instances do not share downloads, so separate loader, origin, or SSRF
+configurations stay isolated.
 
-Each waiter can cancel independently. A cancel removes only that waiter; when
-the last waiter leaves, the request aborts. Successful and failed flights are
-removed so later requests can retry. A shared CRL download is evaluated
-separately for each certificate; a good result for one certificate never becomes
-another certificate's status.
+Each caller can cancel independently. A cancel removes only that caller; when
+the last caller cancels, the download is aborted. Sharing ends when a download
+succeeds or fails, so later requests can start a new download. A shared CRL
+download is evaluated separately for each certificate; a good result for one
+certificate never becomes another certificate's status.
 
 ## Optional worker execution
 
@@ -619,7 +636,7 @@ await engine.close({ force: true });
 | `filename`      | Packaged worker                      | Override only when embedding the worker file. |
 
 Only DER bytes and JSON-compatible DTOs cross the thread boundary. HTTP, request
-scheduling, single-flight, caching, diagnostics, registered rules, and
+scheduling, shared downloads, caching, diagnostics, registered rules, and
 cancellation remain on the main thread. The pool is long-lived and can be shared
 by validators and registry profiles.
 

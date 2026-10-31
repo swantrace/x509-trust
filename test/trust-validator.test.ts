@@ -153,7 +153,7 @@ test("public API supports OCSP callbacks with DER certificate and issuer context
   ]);
 });
 
-test("reports revoked while other certificate pipelines may be in flight", async () => {
+test("reports revoked while other certificate pipelines may still be pending", async () => {
   let loads = 0;
   const validator = createTrustValidator({
     trustAnchors: [root],
