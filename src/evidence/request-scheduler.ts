@@ -98,6 +98,14 @@ export function createRequestScheduler({
     job.signal?.removeEventListener("abort", job.onAbort);
   }
 
+  function rejectQueued(job: QueuedRequest, error: Error): void {
+    if (job.settled) return;
+    clearQueued(job);
+    const index = queue.indexOf(job);
+    if (index >= 0) queue.splice(index, 1);
+    job.reject(error);
+  }
+
   function pump(): void {
     for (let index = 0; index < queue.length && active < maxActiveRequests; ) {
       const job = queue[index];
@@ -115,6 +123,34 @@ export function createRequestScheduler({
     }
   }
 
+  function enqueue(origin: string, signal?: AbortSignal): Promise<() => void> {
+    return new Promise((resolve, reject) => {
+      if (queue.length >= maxQueuedRequests) {
+        reject(new ResourceLimitError("The evidence request queue is full"));
+        return;
+      }
+      const job: QueuedRequest = {
+        origin,
+        resolve,
+        reject,
+        signal,
+        timer: setTimeout(() => {
+          rejectQueued(
+            job,
+            new ResourceLimitError(
+              "Timed out waiting for an evidence request slot"
+            )
+          );
+        }, queueTimeoutMs),
+        onAbort: () => rejectQueued(job, abortError()),
+        settled: false
+      };
+      job.timer.unref();
+      signal?.addEventListener("abort", job.onAbort, { once: true });
+      queue.push(job);
+    });
+  }
+
   return {
     stats() {
       return { active, queued: queue.length };
@@ -129,42 +165,7 @@ export function createRequestScheduler({
       const slot =
         canStart(origin) && queue.length === 0
           ? Promise.resolve(start(origin))
-          : new Promise<() => void>((resolve, reject) => {
-              if (queue.length >= maxQueuedRequests) {
-                reject(
-                  new ResourceLimitError("The evidence request queue is full")
-                );
-                return;
-              }
-              const job: QueuedRequest = {
-                origin,
-                resolve,
-                reject,
-                signal,
-                timer: setTimeout(() => {
-                  if (job.settled) return;
-                  clearQueued(job);
-                  const index = queue.indexOf(job);
-                  if (index >= 0) queue.splice(index, 1);
-                  reject(
-                    new ResourceLimitError(
-                      "Timed out waiting for an evidence request slot"
-                    )
-                  );
-                }, queueTimeoutMs),
-                onAbort: () => {
-                  if (job.settled) return;
-                  clearQueued(job);
-                  const index = queue.indexOf(job);
-                  if (index >= 0) queue.splice(index, 1);
-                  reject(abortError());
-                },
-                settled: false
-              };
-              job.timer.unref();
-              signal?.addEventListener("abort", job.onAbort, { once: true });
-              queue.push(job);
-            });
+          : enqueue(origin, signal);
       return slot.then(async (release) => {
         try {
           return await task();

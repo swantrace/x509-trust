@@ -39,13 +39,6 @@ export const EVIDENCE_PROVIDER_DEFAULTS = Object.freeze({
   queueTimeoutMs: 30_000
 });
 
-interface Flight {
-  controller: AbortController;
-  promise: Promise<Uint8Array>;
-  waiters: number;
-  settled: boolean;
-}
-
 function abortError(): DOMException {
   return new DOMException("The operation was aborted", "AbortError");
 }
@@ -59,6 +52,62 @@ function originOf(url: string): string {
     return new URL(url).origin;
   } catch {
     return url;
+  }
+}
+
+class ShareDownload {
+  readonly #controller = new AbortController();
+  readonly #promise: Promise<Uint8Array>;
+  readonly #onFinish: () => void;
+  #waiters = 0;
+  #settled = false;
+
+  constructor(
+    start: (signal: AbortSignal) => Promise<Uint8Array>,
+    onFinish: () => void
+  ) {
+    this.#onFinish = onFinish;
+    this.#promise = start(this.#controller.signal);
+    const settled = () => {
+      this.#settled = true;
+      this.#onFinish();
+    };
+    this.#promise.then(settled, settled);
+  }
+
+  subscribe(signal?: AbortSignal): Promise<Uint8Array> {
+    if (signal?.aborted) return Promise.reject(abortError());
+    return new Promise<Uint8Array>((resolve, reject) => {
+      let done = false;
+      const finish = (): boolean => {
+        if (done) return false;
+        done = true;
+        signal?.removeEventListener("abort", onAbort);
+        this.#waiters--;
+        return true;
+      };
+      const onAbort = () => {
+        if (!finish()) return;
+        if (this.#waiters === 0 && !this.#settled) {
+          this.#onFinish();
+          this.#controller.abort();
+        }
+        reject(abortError());
+      };
+      this.#waiters++;
+      this.#promise.then(
+        (value) => {
+          if (finish()) resolve(value);
+        },
+        (error) => {
+          if (finish()) reject(error);
+        }
+      );
+      if (signal) {
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      }
+    });
   }
 }
 
@@ -77,47 +126,7 @@ export function createEvidenceProvider({
   const ocspLoader: OcspLoader | false =
     loadOcsp === false ? false : (loadOcsp ?? defaults!.loadOcsp);
   const scheduler = createRequestScheduler(schedulerOptions);
-  const flights = new Map<string, Flight>();
-
-  function subscribe(
-    key: string,
-    flight: Flight,
-    signal?: AbortSignal
-  ): Promise<Uint8Array> {
-    if (signal?.aborted) return Promise.reject(abortError());
-    return new Promise<Uint8Array>((resolve, reject) => {
-      let done = false;
-      const cleanup = () => signal?.removeEventListener("abort", onAbort);
-      const finish = (): boolean => {
-        if (done) return false;
-        done = true;
-        cleanup();
-        flight.waiters--;
-        return true;
-      };
-      const onAbort = () => {
-        if (!finish()) return;
-        if (flight.waiters === 0 && !flight.settled) {
-          if (flights.get(key) === flight) flights.delete(key);
-          flight.controller.abort();
-        }
-        reject(abortError());
-      };
-      flight.waiters++;
-      flight.promise.then(
-        (value) => {
-          if (finish()) resolve(value);
-        },
-        (error) => {
-          if (finish()) reject(error);
-        }
-      );
-      if (signal) {
-        if (signal.aborted) onAbort();
-        else signal.addEventListener("abort", onAbort, { once: true });
-      }
-    });
-  }
+  const downloads = new Map<string, ShareDownload>();
 
   function sharedLoad(
     key: string,
@@ -126,21 +135,18 @@ export function createEvidenceProvider({
     load: (signal: AbortSignal) => Promise<Uint8Array>
   ): Promise<Uint8Array> {
     if (signal?.aborted) return Promise.reject(abortError());
-    let flight = flights.get(key);
-    if (!flight) {
-      const controller = new AbortController();
-      const promise = scheduler.run(origin, controller.signal, () =>
-        load(controller.signal)
+    let download = downloads.get(key);
+    if (!download) {
+      const created = new ShareDownload(
+        (signal) => scheduler.run(origin, signal, () => load(signal)),
+        () => {
+          if (downloads.get(key) === created) downloads.delete(key);
+        }
       );
-      flight = { controller, promise, waiters: 0, settled: false };
-      flights.set(key, flight);
-      const settled = () => {
-        flight!.settled = true;
-        if (flights.get(key) === flight) flights.delete(key);
-      };
-      promise.then(settled, settled);
+      download = created;
+      downloads.set(key, download);
     }
-    return subscribe(key, flight, signal);
+    return download.subscribe(signal);
   }
 
   return {
@@ -158,7 +164,7 @@ export function createEvidenceProvider({
       if (!options.issuerCertificate) {
         return Promise.reject(
           new TypeError(
-            "A CRL request requires issuerCertificate for single-flight keying"
+            "A CRL request requires issuerCertificate to identify shared downloads"
           )
         );
       }
@@ -178,7 +184,7 @@ export function createEvidenceProvider({
       if (!options.requestDer) {
         return Promise.reject(
           new TypeError(
-            "An OCSP request requires requestDer for single-flight keying"
+            "An OCSP request requires requestDer to identify shared downloads"
           )
         );
       }
