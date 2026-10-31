@@ -46,7 +46,6 @@ interface QueuedRequest {
   signal?: AbortSignal;
   timer: NodeJS.Timeout;
   onAbort: () => void;
-  settled: boolean;
 }
 
 export function createRequestScheduler({
@@ -64,7 +63,7 @@ export function createRequestScheduler({
 
   let active = 0;
   const activePerOrigin = new Map<string, number>();
-  const queue: QueuedRequest[] = [];
+  const queue = new Set<QueuedRequest>();
 
   function canStart(origin: string): boolean {
     return (
@@ -92,29 +91,22 @@ export function createRequestScheduler({
     };
   }
 
-  function clearQueued(job: QueuedRequest): void {
-    job.settled = true;
+  function removeQueued(job: QueuedRequest): boolean {
+    if (!queue.delete(job)) return false;
     clearTimeout(job.timer);
     job.signal?.removeEventListener("abort", job.onAbort);
+    return true;
   }
 
   function rejectQueued(job: QueuedRequest, error: Error): void {
-    if (job.settled) return;
-    clearQueued(job);
-    const index = queue.indexOf(job);
-    if (index >= 0) queue.splice(index, 1);
-    job.reject(error);
+    if (removeQueued(job)) job.reject(error);
   }
 
   function pump(): void {
-    for (let index = 0; index < queue.length && active < maxActiveRequests; ) {
-      const job = queue[index];
-      if (!canStart(job.origin)) {
-        index++;
-        continue;
-      }
-      queue.splice(index, 1);
-      clearQueued(job);
+    for (const job of queue) {
+      if (active >= maxActiveRequests) break;
+      if (!canStart(job.origin)) continue;
+      removeQueued(job);
       if (job.signal?.aborted) {
         job.reject(abortError());
         continue;
@@ -125,7 +117,7 @@ export function createRequestScheduler({
 
   function enqueue(origin: string, signal?: AbortSignal): Promise<() => void> {
     return new Promise((resolve, reject) => {
-      if (queue.length >= maxQueuedRequests) {
+      if (queue.size >= maxQueuedRequests) {
         reject(new ResourceLimitError("The evidence request queue is full"));
         return;
       }
@@ -142,18 +134,17 @@ export function createRequestScheduler({
             )
           );
         }, queueTimeoutMs),
-        onAbort: () => rejectQueued(job, abortError()),
-        settled: false
+        onAbort: () => rejectQueued(job, abortError())
       };
       job.timer.unref();
       signal?.addEventListener("abort", job.onAbort, { once: true });
-      queue.push(job);
+      queue.add(job);
     });
   }
 
   return {
     stats() {
-      return { active, queued: queue.length };
+      return { active, queued: queue.size };
     },
 
     run<T>(
@@ -162,12 +153,14 @@ export function createRequestScheduler({
       task: () => Promise<T>
     ): Promise<T> {
       if (signal?.aborted) return Promise.reject(abortError());
-      const slot =
-        canStart(origin) && queue.length === 0
-          ? Promise.resolve(start(origin))
-          : enqueue(origin, signal);
+      // Waiters for a saturated origin must not block other eligible origins.
+      const slot = canStart(origin)
+        ? Promise.resolve(start(origin))
+        : enqueue(origin, signal);
       return slot.then(async (release) => {
         try {
+          // A cancellation can arrive after reservation but before this callback.
+          if (signal?.aborted) throw abortError();
           return await task();
         } finally {
           release();

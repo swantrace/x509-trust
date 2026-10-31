@@ -588,6 +588,11 @@ application replicas have independent provider instances and limits.
 Queue-full, queue-timeout, and verification-deadline conditions return
 `RESOURCE_LIMIT_EXCEEDED`.
 
+Requests waiting on a saturated origin do not block other origins when global
+capacity is available. Cancelling or timing out a queued request frees its queue
+space. A running custom loader that ignores cancellation keeps its download slot
+until its promise settles.
+
 The provider shares matching downloads while they are pending. CRL downloads
 are matched by URL and issuer within the same provider instance; OCSP downloads
 also require the same target certificate and request DER. Different provider
