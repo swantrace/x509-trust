@@ -9,6 +9,7 @@ import {
   type TrustRuleRegistration,
   type ValidationProfileInput
 } from "../src/index.ts";
+import { normalizeRuleRegistrations } from "../src/profile/rules.ts";
 import type { SyntheticCertificate } from "./helpers/synthetic-pki.ts";
 import {
   createCrl,
@@ -196,6 +197,91 @@ test("unknown profiles and versions fail without any evidence I/O", async () => 
   assert.equal(unknownVersion.valid, false);
   assert.equal(unknownVersion.code, "UNKNOWN_PROFILE_VERSION");
   assert.equal(calls.crl.length, 0);
+});
+
+test("registry schemas reject malformed inputs before certificate I/O", async () => {
+  const { registry, calls } = makeRegistry([
+    { profileId: "known", chain: base }
+  ]);
+  for (const input of [
+    null,
+    {
+      profileId: "known",
+      certificateChain: inputFor(base),
+      unexpected: undefined
+    },
+    { profileId: "known", certificateChain: {} },
+    { profileId: "known", certificateChain: inputFor(base), profileVersion: 0 },
+    {
+      profileId: "known",
+      certificateChain: inputFor(base),
+      checkDate: "2026-10-15"
+    }
+  ]) {
+    await assert.rejects(registry.verify(input), TypeError);
+  }
+  for (const input of [
+    null,
+    { trustAnchors: [base.root.der] },
+    { profile: profileFor("bad"), trustAnchors: [] },
+    {
+      profile: profileFor("bad"),
+      trustAnchors: [base.root.der],
+      unexpected: undefined
+    }
+  ]) {
+    assert.throws(
+      () => registry.register(input),
+      (error: unknown) => {
+        assert.ok(error instanceof ProfileError);
+        assert.equal(error.code, "INVALID_PROFILE");
+        return true;
+      }
+    );
+  }
+  const malformedCertificate = await registry.verify({
+    profileId: "known",
+    certificateChain: [123]
+  });
+  assert.equal(malformedCertificate.valid, false);
+  assert.equal(malformedCertificate.code, "INVALID_CERTIFICATE");
+  const oversizedChain = await registry.verify({
+    profileId: "known",
+    certificateChain: Array(17).fill(null)
+  });
+  assert.equal(oversizedChain.valid, false);
+  assert.equal(oversizedChain.code, "INVALID_CERTIFICATE_PATH");
+  assert.equal(calls.crl.length, 0);
+});
+
+test("rule schemas preserve callbacks and reject invalid registrations", () => {
+  const check = () => ({ ok: true as const });
+  const input = [{ name: " custom rule ", check }];
+  const rules = normalizeRuleRegistrations(input);
+  assert.notEqual(rules, input);
+  assert.notEqual(rules[0], input[0]);
+  assert.equal(rules[0].name, " custom rule ");
+  assert.equal(rules[0].check, check);
+  assert.deepEqual(normalizeRuleRegistrations(undefined), []);
+  for (const invalid of [
+    null,
+    [{ name: "rule", check: true }],
+    [{ name: " ", check }],
+    [{ name: "rule", check, unexpected: undefined }],
+    [
+      { name: "rule", check },
+      { name: "rule", check }
+    ]
+  ]) {
+    assert.throws(
+      () => normalizeRuleRegistrations(invalid),
+      (error: unknown) => {
+        assert.ok(error instanceof ProfileError);
+        assert.equal(error.code, "INVALID_PROFILE");
+        return true;
+      }
+    );
+  }
 });
 
 test("rejects duplicate profile versions and does not partially register failures", async () => {

@@ -297,6 +297,52 @@ test("a valid strict profile still rejects invalid paths and authenticated revoc
   assert.equal(revoked.profileVersion, 1);
 });
 
+test("schema validation preserves strings and treats undefined profile fields as absent", () => {
+  const profile = compileValidationProfile({
+    ...validProfile(),
+    id: " test:profile ",
+    unexpected: undefined,
+    source: { uri: " test source ", version: undefined, unexpected: undefined },
+    revocation: { requiredEvidence: undefined, unexpected: undefined },
+    rules: { maxPathDepth: undefined, unexpected: undefined }
+  });
+  assert.equal(profile.id, " test:profile ");
+  assert.deepEqual(profile.source, { uri: " test source " });
+  assert.equal(profile.revocation.requiredEvidence, "any");
+  assert.deepEqual(profile.revocation.sourceOrder, ["ocsp", "crl"]);
+  assert.equal(Object.hasOwn(profile, "rules"), false);
+  assert.equal(Object.hasOwn(profile, "unexpected"), false);
+});
+
+test("schema failures keep profile error codes and identify the invalid field", () => {
+  assert.throws(
+    () =>
+      compileValidationProfile(
+        validProfile({ rules: { maxPathDepth: Infinity } })
+      ),
+    (error: unknown) => {
+      assert.ok(error instanceof ProfileError);
+      assert.equal(error.code, "INVALID_PROFILE");
+      assert.match(error.message, /rules\.maxPathDepth/);
+      return true;
+    }
+  );
+  expectProfileError(
+    () =>
+      compileValidationProfile(
+        validProfile({ version: Number.MAX_SAFE_INTEGER + 1 })
+      ),
+    "INVALID_PROFILE"
+  );
+  expectProfileError(
+    () =>
+      compileValidationProfile(
+        validProfile({ revocation: { requiredEvidence: "dns" as never } })
+      ),
+    "UNSUPPORTED_PROFILE"
+  );
+});
+
 test("returns the selected profile identity on success", async () => {
   const validator = createTrustValidator({
     trustAnchors: [root],
