@@ -1,47 +1,40 @@
 import { X509Certificate } from "node:crypto";
-import type { DiagnosticCallback } from "../diagnostics.ts";
-import type { CertificateInput } from "../engine/certificate-path.ts";
-import type { ValidatedLeafCertificate } from "../engine/leaf-certificate.ts";
-import { createInlinePkiEngine, type PkiEngine } from "../engine/pki-engine.ts";
-import { invalidProfile, ResourceLimitError } from "../errors.ts";
-import type { CacheStore } from "../evidence/cache.ts";
-import {
-  type CertificateFindings,
-  type EvidenceSummary,
-  requiredMechanisms
-} from "../evidence/evidence.ts";
-import { collectCertificateEvidence } from "../evidence/evidence-collector.ts";
-import {
-  createEvidenceProvider,
-  type EvidenceProvider
-} from "../evidence/evidence-provider.ts";
-import {
-  type CrlLoadOptions,
-  type HttpOptions,
-  type OcspLoadOptions
-} from "../evidence/http-loaders.ts";
-import { createRevocationChecker } from "../evidence/revocation-checker.ts";
+import type { DiagnosticCallback } from "./diagnostics.ts";
+import type { CertificateInput } from "./engine/certificate-path.ts";
+import type { ValidatedLeafCertificate } from "./engine/leaf-certificate.ts";
+import { inlinePkiEngine, type PkiEngine } from "./engine/pki-engine.ts";
+import { invalidProfile, ResourceLimitError } from "./errors.ts";
 import {
   compileValidationProfile,
   DEFAULT_VALIDATION_PROFILE,
   type ProfileVersion,
   type ValidationProfileInput
-} from "../profile/profile.ts";
+} from "./profile/profile.ts";
 import {
   applyTrustRules,
   normalizeRuleRegistrations,
   type TrustRuleRegistration
-} from "../profile/rules.ts";
+} from "./profile/rules.ts";
+import type { CacheStore } from "./revocation/cache.ts";
+import type { HttpOptions } from "./revocation/http-loaders.ts";
+import {
+  type CertificateFindings,
+  type RevocationFinding,
+  type RevocationSummary,
+  requiredMechanisms
+} from "./revocation/revocation.ts";
+import { createRevocationChecker } from "./revocation/revocation-checker.ts";
+import {
+  createRevocationProvider,
+  type RevocationLoaderOptions,
+  type RevocationProvider
+} from "./revocation/revocation-provider.ts";
 
-export interface TrustValidatorOptions {
+export interface TrustValidatorOptions extends RevocationLoaderOptions {
   trustAnchors: readonly CertificateInput[];
   profile?: ValidationProfileInput;
   rules?: readonly TrustRuleRegistration[];
-  loadCrl?:
-    | ((url: string, options?: CrlLoadOptions) => Promise<Uint8Array>)
-    | false;
-  loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
-  provider?: EvidenceProvider;
+  provider?: RevocationProvider;
   engine?: PkiEngine;
   http?: HttpOptions;
   deadlineMs?: number;
@@ -74,7 +67,7 @@ export type ValidationResult =
       certificatePath: Uint8Array[];
       trustAnchorFingerprint256: string;
       leafCertificate: ValidatedLeafCertificate;
-      evidence: EvidenceSummary[];
+      evidence: RevocationSummary[];
       findings: CertificateFindings[];
       profileId: string;
       profileVersion: ProfileVersion;
@@ -84,7 +77,7 @@ export type ValidationResult =
       code: ValidationFailureCode;
       message: string;
       certificateIndex?: number;
-      evidence?: EvidenceSummary[];
+      evidence?: RevocationSummary[];
       findings?: CertificateFindings[];
       profileId?: string;
       profileVersion?: ProfileVersion;
@@ -94,9 +87,6 @@ export interface TrustValidator {
   verify(options: VerifyOptions): Promise<ValidationResult>;
 }
 
-type CrlLoader = (url: string, options?: CrlLoadOptions) => Promise<Uint8Array>;
-type OcspLoader = (options: OcspLoadOptions) => Promise<Uint8Array>;
-
 function abortError(): DOMException {
   return new DOMException("The operation was aborted", "AbortError");
 }
@@ -105,8 +95,8 @@ export function createTrustValidator({
   trustAnchors,
   profile: profileInput,
   rules: ruleInput,
-  loadCrl,
-  loadOcsp,
+  crlLoader: providedCrlLoader,
+  ocspLoader: providedOcspLoader,
   provider,
   engine: providedEngine,
   http,
@@ -125,41 +115,50 @@ export function createTrustValidator({
     profileInput ?? DEFAULT_VALIDATION_PROFILE,
     { registeredRuleNames: rules.map((rule) => rule.name) }
   );
+  const profileMetadata = {
+    profileId: profile.id,
+    profileVersion: profile.version
+  };
   const anchors = trustAnchors.map((input) =>
     Uint8Array.from(new X509Certificate(input).raw)
   );
   if (!Number.isSafeInteger(deadlineMs) || deadlineMs <= 0) {
     throw new TypeError("deadlineMs must be a positive integer");
   }
-  if (provider && (loadCrl !== undefined || loadOcsp !== undefined)) {
+  if (
+    provider &&
+    (providedCrlLoader !== undefined || providedOcspLoader !== undefined)
+  ) {
     throw invalidProfile(
-      "provider cannot be combined with loadCrl or loadOcsp"
+      "provider cannot be combined with crlLoader or ocspLoader"
     );
   }
-  const evidenceProvider =
-    provider ?? createEvidenceProvider({ loadCrl, loadOcsp, http });
-  const crlLoader: CrlLoader | false = evidenceProvider.supportsCrl
-    ? (url, options) => evidenceProvider.loadCrl(url, options)
-    : false;
-  const ocspLoader: OcspLoader | false = evidenceProvider.supportsOcsp
-    ? (options) => evidenceProvider.loadOcsp(options)
-    : false;
-  const engine = providedEngine ?? createInlinePkiEngine();
+  const revocationProvider =
+    provider ??
+    createRevocationProvider({
+      crlLoader: providedCrlLoader,
+      ocspLoader: providedOcspLoader,
+      http
+    });
+  const engine = providedEngine ?? inlinePkiEngine;
   const mandatory =
     profile.revocation.requiredEvidence === "any"
       ? []
       : requiredMechanisms(profile.revocation.requiredEvidence);
-  if (mandatory.includes("crl") && !crlLoader) {
+  if (mandatory.includes("crl") && !revocationProvider.loadCrl) {
     throw invalidProfile(
       "The profile requires CRL evidence but the CRL loader is disabled"
     );
   }
-  if (mandatory.includes("ocsp") && !ocspLoader) {
+  if (mandatory.includes("ocsp") && !revocationProvider.loadOcsp) {
     throw invalidProfile(
       "The profile requires OCSP evidence but the OCSP loader is disabled"
     );
   }
-  const checker = createRevocationChecker({
+  const checkRevocation = createRevocationChecker({
+    profile,
+    provider: revocationProvider,
+    engine,
     cache,
     maxCacheAgeMs,
     cacheKeyPrefix,
@@ -192,8 +191,7 @@ export function createTrustValidator({
           valid: false,
           code: path.code,
           message: path.message,
-          profileId: profile.id,
-          profileVersion: profile.version
+          ...profileMetadata
         };
       }
 
@@ -201,6 +199,8 @@ export function createTrustValidator({
       // The last path entry is the configured trust anchor. All non-anchor
       // pipelines start together; within a certificate the profile order holds.
       const controller = new AbortController();
+      const progress = new Map<number, CertificateFindings>();
+      let collecting = true;
       let removeAbortListener = () => {};
       const aborted = new Promise<"aborted">((resolve) => {
         if (!signal) return;
@@ -215,12 +215,12 @@ export function createTrustValidator({
 
       let resolveRevoked!: (value: {
         certificateIndex: number;
-        evidence: EvidenceSummary;
+        evidence: RevocationSummary;
         findings: CertificateFindings;
       }) => void;
       const revokedSignal = new Promise<{
         certificateIndex: number;
-        evidence: EvidenceSummary;
+        evidence: RevocationSummary;
         findings: CertificateFindings;
       }>((resolve) => {
         resolveRevoked = resolve;
@@ -237,21 +237,20 @@ export function createTrustValidator({
       type PipelineResult =
         | {
             index: number;
-            result: Awaited<ReturnType<typeof collectCertificateEvidence>>;
+            result: Awaited<ReturnType<typeof checkRevocation>>;
           }
         | { index: number; error: unknown };
       const allCompleted = Promise.all(
         path.certificates.slice(0, -1).map(async (prepared, index) => {
           try {
-            const result = await collectCertificateEvidence({
-              profile,
-              checker,
+            const result = await checkRevocation({
               prepared,
               certificateIndex: index,
               checkDateMs: explicitCheckDateMs,
               signal: controller.signal,
-              crlLoader: crlLoader || undefined,
-              ocspLoader: ocspLoader || undefined
+              onProgress(findings) {
+                if (collecting) progress.set(index, findings);
+              }
             });
             if (result.status === "revoked") {
               resolveRevoked({
@@ -276,6 +275,10 @@ export function createTrustValidator({
         aborted.then(() => ({ kind: "aborted" as const })),
         deadline.then(() => ({ kind: "deadline" as const }))
       ]);
+      collecting = false;
+      const partialFindings = [...progress.values()].sort(
+        (a, b) => a.certificateIndex - b.certificateIndex
+      );
       removeAbortListener();
       if (deadlineTimer) clearTimeout(deadlineTimer);
       if (outcome.kind === "aborted") {
@@ -284,12 +287,28 @@ export function createTrustValidator({
       }
       if (outcome.kind === "deadline") {
         controller.abort();
+        const interrupted = (finding: RevocationFinding) =>
+          finding.code === "EVIDENCE_PENDING" ||
+          finding.code === "EVIDENCE_ABORTED"
+            ? {
+                ...finding,
+                code: "EVIDENCE_DEADLINE_EXCEEDED",
+                message:
+                  "The evidence deadline expired before this attempt completed"
+              }
+            : finding;
         return {
           valid: false,
           code: "RESOURCE_LIMIT_EXCEEDED",
           message: "The verification deadline was exceeded",
-          profileId: profile.id,
-          profileVersion: profile.version
+          findings: partialFindings.map((entry) => ({
+            ...entry,
+            revocation: {
+              crl: entry.revocation.crl.map(interrupted),
+              ocsp: entry.revocation.ocsp.map(interrupted)
+            }
+          })),
+          ...profileMetadata
         };
       }
       if (outcome.kind === "revoked") {
@@ -301,8 +320,7 @@ export function createTrustValidator({
           certificateIndex: outcome.value.certificateIndex,
           evidence: [outcome.value.evidence],
           findings: [outcome.value.findings],
-          profileId: profile.id,
-          profileVersion: profile.version
+          ...profileMetadata
         };
       }
       if (signal?.aborted) throw abortError();
@@ -322,16 +340,10 @@ export function createTrustValidator({
           certificateIndex: revokedEntry.index,
           evidence: [revokedEntry.result.evidence],
           findings: [revokedEntry.result.findings],
-          profileId: profile.id,
-          profileVersion: profile.version
+          ...profileMetadata
         };
       }
-      const completedFindings: CertificateFindings[] = [];
-      for (const entry of outcome.results) {
-        if ("error" in entry) continue;
-        completedFindings.push(entry.result.findings);
-      }
-      const evidence: EvidenceSummary[] = [];
+      const evidence: RevocationSummary[] = [];
       const findings: CertificateFindings[] = [];
       for (const entry of outcome.results) {
         if ("error" in entry) {
@@ -345,9 +357,8 @@ export function createTrustValidator({
               ? (entry.error as ResourceLimitError).message
               : "Revocation validation failed",
             certificateIndex: entry.index,
-            findings: completedFindings,
-            profileId: profile.id,
-            profileVersion: profile.version
+            findings: partialFindings,
+            ...profileMetadata
           };
         }
         if (entry.result.status === "unknown") {
@@ -356,9 +367,8 @@ export function createTrustValidator({
             code: "REVOCATION_STATUS_UNKNOWN",
             message: entry.result.message,
             certificateIndex: entry.index,
-            findings: completedFindings,
-            profileId: profile.id,
-            profileVersion: profile.version
+            findings: partialFindings,
+            ...profileMetadata
           };
         }
         if (entry.result.status !== "good") continue;
@@ -380,8 +390,7 @@ export function createTrustValidator({
           message: ruleFailure,
           evidence,
           findings,
-          profileId: profile.id,
-          profileVersion: profile.version
+          ...profileMetadata
         };
       }
 
@@ -392,8 +401,7 @@ export function createTrustValidator({
         leafCertificate: path.leafCertificate,
         evidence,
         findings,
-        profileId: profile.id,
-        profileVersion: profile.version
+        ...profileMetadata
       };
     }
   };

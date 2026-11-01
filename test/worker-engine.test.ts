@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { createInlinePkiEngine } from "../src/engine/pki-engine.ts";
+import { inlinePkiEngine } from "../src/engine/pki-engine.ts";
 import * as mainEntry from "../src/index.ts";
 import {
-  createEvidenceProvider,
+  createRevocationProvider,
   createTrustValidator,
   ResourceLimitError,
   type ValidationProfileInput
@@ -77,9 +77,9 @@ async function waitForIdle(engine: {
 }
 
 function provider() {
-  return createEvidenceProvider({
-    loadOcsp: false,
-    loadCrl: async (url) =>
+  return createRevocationProvider({
+    ocspLoader: false,
+    crlLoader: async ({ url }) =>
       url.endsWith("/intermediate.crl") ? intermediateCrl : leafCrl
   });
 }
@@ -90,7 +90,7 @@ test("worker APIs live only on the worker entrypoint", () => {
 });
 
 test("worker path preparation matches the inline engine", async () => {
-  const inline = createInlinePkiEngine();
+  const inline = inlinePkiEngine;
   const options = {
     certificateChain: chainInput,
     trustAnchors: [chain.root.der],
@@ -116,7 +116,7 @@ test("worker path preparation matches the inline engine", async () => {
 });
 
 test("worker CRL and OCSP validation match the inline engine", async () => {
-  const inline = createInlinePkiEngine();
+  const inline = inlinePkiEngine;
   const crlOptions = {
     certificateDer: chain.leaf.der,
     issuerDer: chain.intermediate.der,
@@ -199,9 +199,9 @@ test("worker-backed validation matches inline success and failure outcomes", asy
   const inlineRevoked = await createTrustValidator({
     trustAnchors: [chain.root.der],
     profile: profile(),
-    provider: createEvidenceProvider({
-      loadOcsp: false,
-      loadCrl: async (url) =>
+    provider: createRevocationProvider({
+      ocspLoader: false,
+      crlLoader: async ({ url }) =>
         url.endsWith("/intermediate.crl") ? intermediateCrl : revokedCrl
     }),
     now: () => checkDateMs
@@ -209,9 +209,9 @@ test("worker-backed validation matches inline success and failure outcomes", asy
   const workerRevoked = await createTrustValidator({
     trustAnchors: [chain.root.der],
     profile: profile(),
-    provider: createEvidenceProvider({
-      loadOcsp: false,
-      loadCrl: async (url) =>
+    provider: createRevocationProvider({
+      ocspLoader: false,
+      crlLoader: async ({ url }) =>
         url.endsWith("/intermediate.crl") ? intermediateCrl : revokedCrl
     }),
     engine: worker,

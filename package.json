@@ -57,6 +57,7 @@
   },
   "dependencies": {
     "asn1js": "^4.0.0",
+    "p-queue": "^10.0.0",
     "pkijs": "^4.0.0"
   },
   "peerDependencies": {

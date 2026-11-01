@@ -1,21 +1,21 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  decideRevocationEvidence,
-  type EvidenceAttempt,
-  type EvidenceSummary,
-  requiredMechanisms
-} from "../src/evidence/evidence.ts";
 import type {
   RequiredEvidence,
   RevocationMechanism
 } from "../src/profile/profile.ts";
+import {
+  decideRevocation,
+  type RevocationAttempt,
+  type RevocationSummary,
+  requiredMechanisms
+} from "../src/revocation/revocation.ts";
 
 function summary(
   mechanism: RevocationMechanism,
   status: "good" | "revoked",
   certificateIndex = 0
-): EvidenceSummary {
+): RevocationSummary {
   return {
     certificateIndex,
     mechanism,
@@ -32,7 +32,7 @@ function attempt(
   mechanism: RevocationMechanism,
   status: "good" | "revoked" | "unknown",
   certificateIndex = 0
-): EvidenceAttempt {
+): RevocationAttempt {
   return {
     certificateIndex,
     mechanism,
@@ -44,14 +44,14 @@ function attempt(
 
 test("any evidence accepts the first authenticated good and never downgrades revoked", () => {
   assert.deepEqual(
-    decideRevocationEvidence("any", [
+    decideRevocation("any", [
       attempt("ocsp", "unknown"),
       attempt("crl", "good")
     ]),
     { status: "good", evidence: [summary("crl", "good")] }
   );
   assert.deepEqual(
-    decideRevocationEvidence("any", [
+    decideRevocation("any", [
       attempt("crl", "good"),
       attempt("ocsp", "revoked")
     ]),
@@ -61,36 +61,30 @@ test("any evidence accepts the first authenticated good and never downgrades rev
 
 test("required CRL or OCSP evidence cannot be satisfied by the other mechanism", () => {
   assert.equal(
-    decideRevocationEvidence("crl", [attempt("ocsp", "good")]).status,
+    decideRevocation("crl", [attempt("ocsp", "good")]).status,
     "unknown"
   );
   assert.equal(
-    decideRevocationEvidence("ocsp", [attempt("crl", "good")]).status,
+    decideRevocation("ocsp", [attempt("crl", "good")]).status,
     "unknown"
   );
   assert.deepEqual(
-    decideRevocationEvidence("crl", [
-      attempt("ocsp", "good"),
-      attempt("crl", "good")
-    ]),
+    decideRevocation("crl", [attempt("ocsp", "good"), attempt("crl", "good")]),
     { status: "good", evidence: [summary("crl", "good")] }
   );
 });
 
 test("both evidence requires a good result from each mechanism", () => {
   assert.equal(
-    decideRevocationEvidence("both", [attempt("ocsp", "good")]).status,
+    decideRevocation("both", [attempt("ocsp", "good")]).status,
     "unknown"
   );
   assert.equal(
-    decideRevocationEvidence("both", [attempt("crl", "good")]).status,
+    decideRevocation("both", [attempt("crl", "good")]).status,
     "unknown"
   );
   assert.deepEqual(
-    decideRevocationEvidence("both", [
-      attempt("ocsp", "good"),
-      attempt("crl", "good")
-    ]),
+    decideRevocation("both", [attempt("ocsp", "good"), attempt("crl", "good")]),
     {
       status: "good",
       evidence: [summary("ocsp", "good"), summary("crl", "good")]
@@ -100,7 +94,7 @@ test("both evidence requires a good result from each mechanism", () => {
 
 test("authenticated revoked always wins, including under both", () => {
   for (const required of ["any", "crl", "ocsp", "both"] as RequiredEvidence[]) {
-    const decision = decideRevocationEvidence(required, [
+    const decision = decideRevocation(required, [
       attempt("crl", "good"),
       attempt("ocsp", "revoked")
     ]);
@@ -109,7 +103,7 @@ test("authenticated revoked always wins, including under both", () => {
 });
 
 test("unknown and unauthenticated evidence cannot establish good", () => {
-  const unauthenticated: EvidenceAttempt = {
+  const unauthenticated: RevocationAttempt = {
     certificateIndex: 0,
     mechanism: "crl",
     status: "good",
@@ -117,13 +111,10 @@ test("unknown and unauthenticated evidence cannot establish good", () => {
     message: "unauthenticated"
   };
   assert.equal(
-    decideRevocationEvidence("any", [attempt("ocsp", "unknown")]).status,
+    decideRevocation("any", [attempt("ocsp", "unknown")]).status,
     "unknown"
   );
-  assert.equal(
-    decideRevocationEvidence("any", [unauthenticated]).status,
-    "unknown"
-  );
+  assert.equal(decideRevocation("any", [unauthenticated]).status, "unknown");
 });
 
 test("required mechanism lists are independent of source order", () => {

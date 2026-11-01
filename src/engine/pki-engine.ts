@@ -203,148 +203,144 @@ async function createOcspRequest(
   return new Uint8Array(request.toSchema(true).toBER(false));
 }
 
-export function createInlinePkiEngine(): PkiEngine {
-  return {
-    async preparePath({ certificateChain, trustAnchors, checkDateMs, signal }) {
-      signal?.throwIfAborted();
-      if (!Number.isFinite(checkDateMs)) {
-        throw new TypeError("checkDate must be a valid date");
-      }
-      if (trustAnchors.length === 0) {
-        throw new TypeError(
-          "trustAnchors must contain at least one certificate"
+export const inlinePkiEngine: PkiEngine = {
+  async preparePath({ certificateChain, trustAnchors, checkDateMs, signal }) {
+    signal?.throwIfAborted();
+    if (!Number.isFinite(checkDateMs)) {
+      throw new TypeError("checkDate must be a valid date");
+    }
+    if (trustAnchors.length === 0) {
+      throw new TypeError("trustAnchors must contain at least one certificate");
+    }
+    if (trustAnchors.length > MAX_TRUST_ANCHORS) {
+      throw new TypeError("trustAnchors exceeds the supported limit");
+    }
+    if (certificateChain.length === 0) {
+      return {
+        pathValid: false,
+        code: "INVALID_CERTIFICATE_PATH",
+        message: "certificateChain must contain at least one certificate"
+      };
+    }
+    if (certificateChain.length > MAX_CERTIFICATE_CHAIN_LENGTH) {
+      return {
+        pathValid: false,
+        code: "INVALID_CERTIFICATE_PATH",
+        message: "certificateChain exceeds the supported limit"
+      };
+    }
+
+    let normalizedChain: Uint8Array[];
+    let normalizedAnchors: Uint8Array[];
+    try {
+      normalizedChain = certificateChain.map((input, index) =>
+        normalizeCertificate(input, `certificateChain[${index}]`)
+      );
+      normalizedAnchors = trustAnchors.map(
+        (anchor, index) => parseDer(anchor, `trustAnchors[${index}]`).bytes
+      );
+    } catch {
+      return {
+        pathValid: false,
+        code: "INVALID_CERTIFICATE",
+        message:
+          "The supplied certificate input is not a single valid DER value"
+      };
+    }
+
+    const checkDate = new Date(checkDateMs);
+    const path = await validateCertificatePath({
+      certificateChain: normalizedChain,
+      trustAnchors: normalizedAnchors,
+      checkDate
+    });
+    if (!path.pathValid) return path;
+
+    try {
+      const certificates = path.certificatePath.map((der) =>
+        Certificate.fromBER(Uint8Array.from(der))
+      );
+      for (const [index, certificate] of certificates.entries()) {
+        assertCertificateStructure(
+          certificate,
+          index === 0 ? "Leaf certificate" : `Certificate ${index}`
         );
       }
-      if (trustAnchors.length > MAX_TRUST_ANCHORS) {
-        throw new TypeError("trustAnchors exceeds the supported limit");
-      }
-      if (certificateChain.length === 0) {
+      const anchorError = assertTrustAnchor(
+        certificates[certificates.length - 1],
+        checkDate
+      );
+      if (anchorError) {
         return {
           pathValid: false,
           code: "INVALID_CERTIFICATE_PATH",
-          message: "certificateChain must contain at least one certificate"
+          message: anchorError
         };
       }
-      if (certificateChain.length > MAX_CERTIFICATE_CHAIN_LENGTH) {
+      const lengthError = assertPathLengthConstraints(certificates);
+      if (lengthError) {
         return {
           pathValid: false,
           code: "INVALID_CERTIFICATE_PATH",
-          message: "certificateChain exceeds the supported limit"
+          message: lengthError
         };
       }
 
-      let normalizedChain: Uint8Array[];
-      let normalizedAnchors: Uint8Array[];
+      const prepared: PreparedCertificate[] = [];
+      for (let index = 0; index < certificates.length; index++) {
+        const certificate = certificates[index];
+        const endpoints = getRevocationEndpoints(certificate);
+        const issuer = certificates[index + 1];
+        prepared.push({
+          index,
+          der: Uint8Array.from(path.certificatePath[index]),
+          issuerDer: issuer
+            ? Uint8Array.from(path.certificatePath[index + 1])
+            : undefined,
+          crlUrls: endpoints.crlUrls,
+          ocspUrls: endpoints.ocspUrls,
+          ocspRequestDer: issuer
+            ? await createOcspRequest(certificate, issuer)
+            : undefined,
+          facts: extractCertificateFacts(
+            certificate,
+            path.certificatePath[index]
+          )
+        });
+      }
+
+      let leafCertificate: ValidatedLeafCertificate;
       try {
-        normalizedChain = certificateChain.map((input, index) =>
-          normalizeCertificate(input, `certificateChain[${index}]`)
-        );
-        normalizedAnchors = trustAnchors.map(
-          (anchor, index) => parseDer(anchor, `trustAnchors[${index}]`).bytes
+        leafCertificate = extractLeafCertificate(
+          certificates[0],
+          path.certificatePath[0]
         );
       } catch {
         return {
           pathValid: false,
           code: "INVALID_CERTIFICATE",
-          message:
-            "The supplied certificate input is not a single valid DER value"
+          message: "Invalid leaf certificate metadata"
         };
       }
 
-      const checkDate = new Date(checkDateMs);
-      const path = await validateCertificatePath({
-        certificateChain: normalizedChain,
-        trustAnchors: normalizedAnchors,
-        checkDate
-      });
-      if (!path.pathValid) return path;
+      return {
+        pathValid: true,
+        certificatePath: path.certificatePath.map((der) =>
+          Uint8Array.from(der)
+        ),
+        trustAnchorFingerprint256: path.trustAnchorFingerprint256,
+        certificates: prepared,
+        leafCertificate
+      };
+    } catch {
+      return {
+        pathValid: false,
+        code: "INVALID_CERTIFICATE_PATH",
+        message: "The validated certificate path contains invalid metadata"
+      };
+    }
+  },
 
-      try {
-        const certificates = path.certificatePath.map((der) =>
-          Certificate.fromBER(Uint8Array.from(der))
-        );
-        for (const [index, certificate] of certificates.entries()) {
-          assertCertificateStructure(
-            certificate,
-            index === 0 ? "Leaf certificate" : `Certificate ${index}`
-          );
-        }
-        const anchorError = assertTrustAnchor(
-          certificates[certificates.length - 1],
-          checkDate
-        );
-        if (anchorError) {
-          return {
-            pathValid: false,
-            code: "INVALID_CERTIFICATE_PATH",
-            message: anchorError
-          };
-        }
-        const lengthError = assertPathLengthConstraints(certificates);
-        if (lengthError) {
-          return {
-            pathValid: false,
-            code: "INVALID_CERTIFICATE_PATH",
-            message: lengthError
-          };
-        }
-
-        const prepared: PreparedCertificate[] = [];
-        for (let index = 0; index < certificates.length; index++) {
-          const certificate = certificates[index];
-          const endpoints = getRevocationEndpoints(certificate);
-          const issuer = certificates[index + 1];
-          prepared.push({
-            index,
-            der: Uint8Array.from(path.certificatePath[index]),
-            issuerDer: issuer
-              ? Uint8Array.from(path.certificatePath[index + 1])
-              : undefined,
-            crlUrls: endpoints.crlUrls,
-            ocspUrls: endpoints.ocspUrls,
-            ocspRequestDer: issuer
-              ? await createOcspRequest(certificate, issuer)
-              : undefined,
-            facts: extractCertificateFacts(
-              certificate,
-              path.certificatePath[index]
-            )
-          });
-        }
-
-        let leafCertificate: ValidatedLeafCertificate;
-        try {
-          leafCertificate = extractLeafCertificate(
-            certificates[0],
-            path.certificatePath[0]
-          );
-        } catch {
-          return {
-            pathValid: false,
-            code: "INVALID_CERTIFICATE",
-            message: "Invalid leaf certificate metadata"
-          };
-        }
-
-        return {
-          pathValid: true,
-          certificatePath: path.certificatePath.map((der) =>
-            Uint8Array.from(der)
-          ),
-          trustAnchorFingerprint256: path.trustAnchorFingerprint256,
-          certificates: prepared,
-          leafCertificate
-        };
-      } catch {
-        return {
-          pathValid: false,
-          code: "INVALID_CERTIFICATE_PATH",
-          message: "The validated certificate path contains invalid metadata"
-        };
-      }
-    },
-
-    validateCrl,
-    validateOcsp
-  };
-}
+  validateCrl,
+  validateOcsp
+};

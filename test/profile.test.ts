@@ -245,7 +245,7 @@ test("rejects invalid profile configuration before any certificate I/O", async (
       createTrustValidator({
         trustAnchors: [root],
         profile: { ...validProfile(), id: "" },
-        loadCrl: loader
+        crlLoader: loader
       }),
     "INVALID_PROFILE"
   );
@@ -256,7 +256,7 @@ test("rejects invalid profile configuration before any certificate I/O", async (
         profile: validProfile({
           revocation: { requiredEvidence: "both", sourceOrder: ["ocsp"] }
         }),
-        loadCrl: loader
+        crlLoader: loader
       }),
     "INVALID_PROFILE"
   );
@@ -268,8 +268,8 @@ test("a valid strict profile still rejects invalid paths and authenticated revoc
     trustAnchors: [root],
     profile: validProfile(),
     now,
-    loadOcsp: false,
-    async loadCrl(url) {
+    ocspLoader: false,
+    async crlLoader({ url }) {
       return url.endsWith("/root.crl")
         ? readCrl("root")
         : readCrl("intermediate-revoked");
@@ -279,8 +279,8 @@ test("a valid strict profile still rejects invalid paths and authenticated revoc
     trustAnchors: [readCertificate("untrusted-root")],
     profile: validProfile(),
     now,
-    loadOcsp: false,
-    loadCrl: async () => readCrl("intermediate-revoked")
+    ocspLoader: false,
+    crlLoader: async () => readCrl("intermediate-revoked")
   });
   const untrusted = await untrustedValidator.verify({
     certificateChain: [leaf, intermediate]
@@ -302,8 +302,8 @@ test("returns the selected profile identity on success", async () => {
     trustAnchors: [root],
     profile: validProfile({ id: "test:profile:success", version: 7 }),
     now,
-    loadOcsp: false,
-    async loadCrl(url) {
+    ocspLoader: false,
+    async crlLoader({ url }) {
       return url.endsWith("/root.crl")
         ? readCrl("root")
         : readCrl("intermediate-clean");

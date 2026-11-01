@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  createEvidenceProvider,
+  createRevocationProvider,
   createTrustValidator,
-  type EvidenceProvider,
-  ResourceLimitError,
+  type OcspRequest,
+  type RevocationProvider,
   type ValidationProfileInput
 } from "../src/index.ts";
 import {
@@ -29,17 +29,32 @@ const requestDer = new Uint8Array([0x10, 0x11]);
 const certificate = new Uint8Array([0x20, 0x21]);
 
 test("provider methods remain callable without their receiver", async () => {
-  const provider = createEvidenceProvider({
-    loadCrl: async () => new Uint8Array([1]),
-    loadOcsp: async () => new Uint8Array([2])
+  const provider = createRevocationProvider({
+    crlLoader: async (request) => {
+      assert.equal(request.url, "http://detached.test/crl");
+      assert.deepEqual(request.issuerCertificate, issuer);
+      assert.ok(request.signal instanceof AbortSignal);
+      return new Uint8Array([1]);
+    },
+    ocspLoader: async (request) => {
+      assert.equal(request.url, "http://detached.test/ocsp");
+      assert.deepEqual(request.certificate, certificate);
+      assert.deepEqual(request.issuerCertificate, issuer);
+      assert.deepEqual(request.requestDer, requestDer);
+      assert.ok(request.signal instanceof AbortSignal);
+      return new Uint8Array([2]);
+    }
   });
   const { loadCrl, loadOcsp, stats } = provider;
 
   assert.equal(Object.getPrototypeOf(provider), Object.prototype);
-  assert.equal(provider.supportsCrl, true);
-  assert.equal(provider.supportsOcsp, true);
+  assert.ok(loadCrl);
+  assert.ok(loadOcsp);
   assert.deepEqual(
-    await loadCrl("http://detached.test/crl", { issuerCertificate: issuer }),
+    await loadCrl({
+      url: "http://detached.test/crl",
+      issuerCertificate: issuer
+    }),
     new Uint8Array([1])
   );
   assert.deepEqual(
@@ -54,115 +69,114 @@ test("provider methods remain callable without their receiver", async () => {
   assert.deepEqual(stats(), { active: 0, queued: 0 });
 });
 
-test("bounds active requests and rejects overload beyond the queue", async () => {
+test("loading functions are present only for enabled mechanisms", () => {
+  for (const crlEnabled of [true, false]) {
+    for (const ocspEnabled of [true, false]) {
+      const provider = createRevocationProvider({
+        crlLoader: crlEnabled ? undefined : false,
+        ocspLoader: ocspEnabled ? undefined : false
+      });
+      assert.equal(
+        typeof provider.loadCrl,
+        crlEnabled ? "function" : "undefined"
+      );
+      assert.equal(
+        typeof provider.loadOcsp,
+        ocspEnabled ? "function" : "undefined"
+      );
+      assert.deepEqual(provider.stats(), { active: 0, queued: 0 });
+    }
+  }
+});
+
+test("rejects incomplete provider requests", async () => {
+  const provider = createRevocationProvider({
+    crlLoader: async () => new Uint8Array(),
+    ocspLoader: async () => new Uint8Array()
+  });
+  await assert.rejects(
+    // @ts-expect-error Provider requests require an issuer for shared downloads.
+    provider.loadCrl!({ url: "http://missing.test/crl" }),
+    /requires issuerCertificate/
+  );
+  // @ts-expect-error Provider requests require prepared OCSP request bytes.
+  const incompleteOcsp: OcspRequest = {
+    url: "http://missing.test/ocsp",
+    certificate,
+    issuerCertificate: issuer
+  };
+  await assert.rejects(
+    provider.loadOcsp!(incompleteOcsp),
+    /requires requestDer/
+  );
+});
+
+test("bounds concurrency while allowing more than 32 pending downloads", async (t) => {
+  const gate = deferred();
+  const bothStarted = deferred();
+  t.after(() => gate.resolve());
   let active = 0;
   let maxActive = 0;
-  const started = deferred();
-  const gates = new Map<string, ReturnType<typeof deferred<Uint8Array>>>();
-  const provider = createEvidenceProvider({
-    loadOcsp: false,
-    maxActiveRequests: 1,
-    maxQueuedRequests: 1,
-    maxActivePerOrigin: 1,
-    queueTimeoutMs: 1000,
-    loadCrl: async (url) => {
+  let loads = 0;
+  const provider = createRevocationProvider({
+    ocspLoader: false,
+    maxActiveRequests: 2,
+    crlLoader: async () => {
+      loads++;
       active++;
       maxActive = Math.max(maxActive, active);
-      started.resolve();
-      const gate = deferred<Uint8Array>();
-      gates.set(url, gate);
+      if (active === 2) bothStarted.resolve();
       try {
-        return await gate.promise;
+        await gate.promise;
+        return new Uint8Array([1]);
       } finally {
         active--;
       }
     }
   });
-  const first = provider.loadCrl("http://limit.test/one", {
-    issuerCertificate: issuer
-  });
-  await started.promise;
-  const second = provider.loadCrl("http://limit.test/two", {
-    issuerCertificate: issuer
-  });
-  const third = provider.loadCrl("http://limit.test/three", {
-    issuerCertificate: issuer
-  });
-  await assert.rejects(third, ResourceLimitError);
-  assert.deepEqual(provider.stats(), { active: 1, queued: 1 });
-  assert.equal(maxActive, 1);
-  assert.equal(gates.size, 1);
-  gates.get("http://limit.test/one")!.resolve(new Uint8Array([1]));
-  await first;
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(gates.size, 2);
-  gates.get("http://limit.test/two")!.resolve(new Uint8Array([2]));
-  await second;
-  assert.equal(maxActive, 1);
-});
-
-test("enforces a per-origin active limit while allowing other origins", async () => {
-  const starts: string[] = [];
-  const gates = new Map<string, ReturnType<typeof deferred<Uint8Array>>>();
-  const provider = createEvidenceProvider({
-    loadOcsp: false,
-    maxActiveRequests: 2,
-    maxQueuedRequests: 4,
-    maxActivePerOrigin: 1,
-    queueTimeoutMs: 1000,
-    loadCrl: async (url) => {
-      starts.push(url);
-      const gate = deferred<Uint8Array>();
-      gates.set(url, gate);
-      return gate.promise;
-    }
-  });
-  const firstA = provider.loadCrl("http://a.test/one", {
-    issuerCertificate: issuer
-  });
-  const firstB = provider.loadCrl("http://b.test/one", {
-    issuerCertificate: issuer
-  });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(
-    new Set(starts),
-    new Set(["http://a.test/one", "http://b.test/one"])
+  const completed = Promise.all(
+    Array.from({ length: 42 }, (_, index) =>
+      provider.loadCrl!({
+        url: `http://same.test/${index}.crl`,
+        issuerCertificate: issuer
+      })
+    )
   );
-  const secondA = provider.loadCrl("http://a.test/two", {
-    issuerCertificate: issuer
-  });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(starts.includes("http://a.test/two"), false);
-  gates.get("http://a.test/one")!.resolve(new Uint8Array([1]));
-  await firstA;
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(starts.includes("http://a.test/two"), true);
-  gates.get("http://b.test/one")!.resolve(new Uint8Array([2]));
-  gates.get("http://a.test/two")!.resolve(new Uint8Array([3]));
-  await Promise.all([firstB, secondA]);
+  await bothStarted.promise;
+  assert.deepEqual(provider.stats(), { active: 2, queued: 40 });
+  assert.equal(loads, 2);
+
+  gate.resolve();
+  assert.equal((await completed).length, 42);
+  assert.equal(loads, 42);
+  assert.equal(maxActive, 2);
+  assert.deepEqual(provider.stats(), { active: 0, queued: 0 });
 });
 
 test("shares one CRL download for the same URL and issuer", async () => {
   let loads = 0;
   const started = deferred();
   const gate = deferred<Uint8Array>();
-  const provider = createEvidenceProvider({
-    loadOcsp: false,
-    loadCrl: async () => {
+  const provider = createRevocationProvider({
+    ocspLoader: false,
+    crlLoader: async () => {
       loads++;
       started.resolve();
       return gate.promise;
     }
   });
-  const first = provider.loadCrl("http://single.test/crl", {
+  const first = provider.loadCrl!({
+    url: "http://single.test/crl",
     issuerCertificate: issuer
   });
   await started.promise;
-  const second = provider.loadCrl("http://single.test/crl", {
+  const second = provider.loadCrl!({
+    url: "http://single.test/crl",
     issuerCertificate: issuer
   });
   assert.equal(loads, 1);
-  const differentIssuer = provider.loadCrl("http://single.test/crl", {
+  const differentIssuer = provider.loadCrl!({
+    url: "http://single.test/crl",
     issuerCertificate: otherIssuer
   });
   await new Promise((resolve) => setImmediate(resolve));
@@ -177,9 +191,9 @@ test("shares OCSP downloads only when URL, certificate, issuer and request DER m
   let loads = 0;
   const started = deferred();
   const gate = deferred<Uint8Array>();
-  const provider = createEvidenceProvider({
-    loadCrl: false,
-    loadOcsp: async () => {
+  const provider = createRevocationProvider({
+    crlLoader: false,
+    ocspLoader: async () => {
       loads++;
       started.resolve();
       return gate.promise;
@@ -191,16 +205,16 @@ test("shares OCSP downloads only when URL, certificate, issuer and request DER m
     issuerCertificate: issuer,
     requestDer
   };
-  const first = provider.loadOcsp(options);
+  const first = provider.loadOcsp!(options);
   await started.promise;
-  const second = provider.loadOcsp(options);
+  const second = provider.loadOcsp!(options);
   assert.equal(loads, 1);
   const differentInputs = [
     { ...options, url: "http://other-ocsp.test/status" },
     { ...options, certificate: new Uint8Array([0x99]) },
     { ...options, issuerCertificate: otherIssuer },
     { ...options, requestDer: new Uint8Array([0x99]) }
-  ].map((input) => provider.loadOcsp(input));
+  ].map((input) => provider.loadOcsp!(input));
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(loads, 5);
   gate.resolve(new Uint8Array([7]));
@@ -213,22 +227,24 @@ test("one subscriber's cancel does not abort a download another still needs", as
   const started = deferred();
   const gate = deferred<Uint8Array>();
   let underlyingSignal: AbortSignal | undefined;
-  const provider = createEvidenceProvider({
-    loadOcsp: false,
-    loadCrl: async (_url, options) => {
-      underlyingSignal = options?.signal;
+  const provider = createRevocationProvider({
+    ocspLoader: false,
+    crlLoader: async ({ signal }) => {
+      underlyingSignal = signal;
       started.resolve();
       return gate.promise;
     }
   });
   const firstController = new AbortController();
   const secondController = new AbortController();
-  const first = provider.loadCrl("http://shared.test/crl", {
+  const first = provider.loadCrl!({
+    url: "http://shared.test/crl",
     issuerCertificate: issuer,
     signal: firstController.signal
   });
   await started.promise;
-  const second = provider.loadCrl("http://shared.test/crl", {
+  const second = provider.loadCrl!({
+    url: "http://shared.test/crl",
     issuerCertificate: issuer,
     signal: secondController.signal
   });
@@ -247,17 +263,14 @@ test("when every subscriber cancels, the underlying request aborts and slots fre
   let loads = 0;
   const started = deferred();
   const aborted = deferred();
-  const provider = createEvidenceProvider({
-    loadOcsp: false,
+  const provider = createRevocationProvider({
+    ocspLoader: false,
     maxActiveRequests: 1,
-    maxQueuedRequests: 1,
-    maxActivePerOrigin: 1,
-    loadCrl: async (_url, options) => {
+    crlLoader: async ({ signal }) => {
       loads++;
       if (loads > 1) return new Uint8Array([6]);
       started.resolve();
       return new Promise<Uint8Array>((_resolve, reject) => {
-        const signal = options?.signal;
         assert.ok(signal);
         signal.addEventListener(
           "abort",
@@ -272,12 +285,14 @@ test("when every subscriber cancels, the underlying request aborts and slots fre
   });
   const firstController = new AbortController();
   const secondController = new AbortController();
-  const first = provider.loadCrl("http://cancel.test/crl", {
+  const first = provider.loadCrl!({
+    url: "http://cancel.test/crl",
     issuerCertificate: issuer,
     signal: firstController.signal
   });
   await started.promise;
-  const second = provider.loadCrl("http://cancel.test/crl", {
+  const second = provider.loadCrl!({
+    url: "http://cancel.test/crl",
     issuerCertificate: issuer,
     signal: secondController.signal
   });
@@ -287,7 +302,8 @@ test("when every subscriber cancels, the underlying request aborts and slots fre
   await assert.rejects(second);
   await aborted.promise;
   assert.deepEqual(
-    await provider.loadCrl("http://cancel.test/crl", {
+    await provider.loadCrl!({
+      url: "http://cancel.test/crl",
       issuerCertificate: issuer
     }),
     new Uint8Array([6])
@@ -298,26 +314,29 @@ test("when every subscriber cancels, the underlying request aborts and slots fre
 test("a failed shared load is removed so a retry performs a fresh download", async () => {
   let loads = 0;
   const started = deferred();
-  const provider = createEvidenceProvider({
-    loadOcsp: false,
-    loadCrl: async () => {
+  const provider = createRevocationProvider({
+    ocspLoader: false,
+    crlLoader: async () => {
       loads++;
       started.resolve();
       if (loads === 1) throw new Error("transport failed");
       return new Uint8Array([8]);
     }
   });
-  const first = provider.loadCrl("http://retry.test/crl", {
+  const first = provider.loadCrl!({
+    url: "http://retry.test/crl",
     issuerCertificate: issuer
   });
   await started.promise;
-  const second = provider.loadCrl("http://retry.test/crl", {
+  const second = provider.loadCrl!({
+    url: "http://retry.test/crl",
     issuerCertificate: issuer
   });
   await assert.rejects(first, /transport failed/);
   await assert.rejects(second, /transport failed/);
   assert.deepEqual(
-    await provider.loadCrl("http://retry.test/crl", {
+    await provider.loadCrl!({
+      url: "http://retry.test/crl",
       issuerCertificate: issuer
     }),
     new Uint8Array([8])
@@ -332,9 +351,9 @@ for (const outcome of ["resolves", "rejects"] as const) {
     const started = deferred();
     const replacementStarted = deferred();
     let loads = 0;
-    const provider = createEvidenceProvider({
-      loadOcsp: false,
-      loadCrl: async () => {
+    const provider = createRevocationProvider({
+      ocspLoader: false,
+      crlLoader: async () => {
         loads++;
         if (loads === 1) {
           started.resolve();
@@ -347,7 +366,8 @@ for (const outcome of ["resolves", "rejects"] as const) {
     });
     const controller = new AbortController();
     const url = "http://replacement.test/crl";
-    const first = provider.loadCrl(url, {
+    const first = provider.loadCrl!({
+      url,
       issuerCertificate: issuer,
       signal: controller.signal
     });
@@ -355,14 +375,14 @@ for (const outcome of ["resolves", "rejects"] as const) {
     controller.abort();
     await assert.rejects(first, { name: "AbortError" });
 
-    const retry = provider.loadCrl(url, { issuerCertificate: issuer });
+    const retry = provider.loadCrl!({ url, issuerCertificate: issuer });
     await replacementStarted.promise;
     if (outcome === "resolves") abandoned.resolve(new Uint8Array([1]));
     else abandoned.reject(new Error("abandoned download failed"));
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(provider.stats(), { active: 1, queued: 0 });
 
-    const subscriber = provider.loadCrl(url, { issuerCertificate: issuer });
+    const subscriber = provider.loadCrl!({ url, issuerCertificate: issuer });
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(loads, 2);
     replacement.resolve(new Uint8Array([2]));
@@ -372,15 +392,14 @@ for (const outcome of ["resolves", "rejects"] as const) {
   });
 }
 
-test("cancelling all queued subscribers frees space for a replacement download", async () => {
+test("cancelling all queued subscribers removes the download before a later retry", async () => {
   const started = deferred();
   const gate = deferred<Uint8Array>();
   const loads: string[] = [];
-  const provider = createEvidenceProvider({
-    loadOcsp: false,
+  const provider = createRevocationProvider({
+    ocspLoader: false,
     maxActiveRequests: 1,
-    maxQueuedRequests: 1,
-    loadCrl: async (url) => {
+    crlLoader: async ({ url }) => {
       loads.push(url);
       started.resolve();
       return gate.promise;
@@ -388,15 +407,20 @@ test("cancelling all queued subscribers frees space for a replacement download",
   });
   const activeUrl = "http://queued.test/active.crl";
   const queuedUrl = "http://queued.test/queued.crl";
-  const active = provider.loadCrl(activeUrl, { issuerCertificate: issuer });
+  const active = provider.loadCrl!({
+    url: activeUrl,
+    issuerCertificate: issuer
+  });
   await started.promise;
   const controller = new AbortController();
-  const cancelled = provider.loadCrl(queuedUrl, {
+  const cancelled = provider.loadCrl!({
+    url: queuedUrl,
     issuerCertificate: issuer,
     signal: controller.signal
   });
   const secondController = new AbortController();
-  const alsoCancelled = provider.loadCrl(queuedUrl, {
+  const alsoCancelled = provider.loadCrl!({
+    url: queuedUrl,
     issuerCertificate: issuer,
     signal: secondController.signal
   });
@@ -410,7 +434,10 @@ test("cancelling all queued subscribers frees space for a replacement download",
   assert.deepEqual(provider.stats(), { active: 1, queued: 0 });
   assert.deepEqual(loads, [activeUrl]);
 
-  const retry = provider.loadCrl(queuedUrl, { issuerCertificate: issuer });
+  const retry = provider.loadCrl!({
+    url: queuedUrl,
+    issuerCertificate: issuer
+  });
   assert.deepEqual(provider.stats(), { active: 1, queued: 1 });
   gate.resolve(new Uint8Array([3]));
   await active;
@@ -419,41 +446,20 @@ test("cancelling all queued subscribers frees space for a replacement download",
   assert.deepEqual(provider.stats(), { active: 0, queued: 0 });
 });
 
-test("queue waiters time out with a resource error", async () => {
-  const started = deferred();
-  const gate = deferred<Uint8Array>();
-  const provider = createEvidenceProvider({
-    loadOcsp: false,
-    maxActiveRequests: 1,
-    maxQueuedRequests: 1,
-    maxActivePerOrigin: 1,
-    queueTimeoutMs: 25,
-    loadCrl: async () => {
-      started.resolve();
-      return gate.promise;
-    }
-  });
-  const first = provider.loadCrl("http://timeout.test/one", {
-    issuerCertificate: issuer
-  });
-  await started.promise;
-  const second = provider.loadCrl("http://timeout.test/two", {
-    issuerCertificate: issuer
-  });
-  await assert.rejects(second, ResourceLimitError);
-  gate.resolve(new Uint8Array([4]));
-  await first;
-});
-
 test("verification deadline returns RESOURCE_LIMIT_EXCEEDED", async () => {
   const chain = await createSyntheticChain({
     intermediate: { crlUrls: ["http://deadline.test/intermediate.crl"] },
     leaf: { crlUrls: ["http://deadline.test/leaf.crl"] }
   });
   const release = deferred<Uint8Array>();
-  const provider = createEvidenceProvider({
-    loadOcsp: false,
-    loadCrl: async () => release.promise
+  let loads = 0;
+  const provider = createRevocationProvider({
+    ocspLoader: false,
+    maxActiveRequests: 1,
+    crlLoader: async () => {
+      loads++;
+      return release.promise;
+    }
   });
   const profile: ValidationProfileInput = {
     id: "deadline:profile",
@@ -473,55 +479,9 @@ test("verification deadline returns RESOURCE_LIMIT_EXCEEDED", async () => {
   });
   assert.equal(result.valid, false);
   assert.equal(result.code, "RESOURCE_LIMIT_EXCEEDED");
+  assert.equal(loads, 1);
+  assert.deepEqual(provider.stats(), { active: 0, queued: 0 });
   release.resolve(new Uint8Array([1]));
-});
-
-test("validator maps a provider queue limit to RESOURCE_LIMIT_EXCEEDED", async () => {
-  const chainA = await createSyntheticChain({
-    intermediate: { crlUrls: ["http://queue-a.test/intermediate.crl"] },
-    leaf: { crlUrls: ["http://queue-a.test/leaf.crl"] }
-  });
-  const chainB = await createSyntheticChain({
-    intermediate: { crlUrls: ["http://queue-b.test/intermediate.crl"] },
-    leaf: { crlUrls: ["http://queue-b.test/leaf.crl"] }
-  });
-  const started = deferred();
-  const release = deferred<Uint8Array>();
-  const provider = createEvidenceProvider({
-    loadOcsp: false,
-    maxActiveRequests: 1,
-    maxQueuedRequests: 0,
-    maxActivePerOrigin: 1,
-    loadCrl: async () => {
-      started.resolve();
-      return release.promise;
-    }
-  });
-  const profile: ValidationProfileInput = {
-    id: "queue:profile",
-    version: 1,
-    source: "queue test",
-    anchorSetId: "queue:root",
-    revocation: { requiredEvidence: "crl", sourceOrder: ["crl"] }
-  };
-  const makeValidator = (chain: typeof chainA) =>
-    createTrustValidator({
-      trustAnchors: [chain.root.der],
-      profile,
-      provider,
-      deadlineMs: 5000
-    });
-  const first = makeValidator(chainA).verify({
-    certificateChain: [chainA.leaf.der, chainA.intermediate.der]
-  });
-  await started.promise;
-  const second = await makeValidator(chainB).verify({
-    certificateChain: [chainB.leaf.der, chainB.intermediate.der]
-  });
-  assert.equal(second.valid, false);
-  assert.equal(second.code, "RESOURCE_LIMIT_EXCEEDED");
-  release.resolve(new Uint8Array([1]));
-  await first;
 });
 
 test("validators sharing a provider share download limits and pending downloads", {
@@ -542,11 +502,10 @@ test("validators sharing a provider share download limits and pending downloads"
   const loads: string[] = [];
   let active = 0;
   let maxActive = 0;
-  const provider = createEvidenceProvider({
-    loadOcsp: false,
+  const provider = createRevocationProvider({
+    ocspLoader: false,
     maxActiveRequests: 1,
-    maxQueuedRequests: 1,
-    loadCrl: async (url) => {
+    crlLoader: async ({ url }) => {
       loads.push(url);
       active++;
       maxActive = Math.max(maxActive, active);
@@ -560,10 +519,10 @@ test("validators sharing a provider share download limits and pending downloads"
     }
   });
   let requests = 0;
-  const observed: EvidenceProvider = {
+  const observed: RevocationProvider = {
     ...provider,
-    loadCrl(url, options) {
-      const pending = provider.loadCrl(url, options);
+    loadCrl(request) {
+      const pending = provider.loadCrl!(request);
       if (++requests === 4) subscribed.resolve();
       return pending;
     }
@@ -604,9 +563,9 @@ test("shared CRL bytes still yield per-certificate status", async () => {
   });
   const leafCrl = await createCrl(chain.intermediate, [revokedLeaf]);
   const intermediateCrl = await createCrl(chain.root, []);
-  const provider = createEvidenceProvider({
-    loadOcsp: false,
-    loadCrl: async (url) =>
+  const provider = createRevocationProvider({
+    ocspLoader: false,
+    crlLoader: async ({ url }) =>
       url.endsWith("/intermediate.crl") ? intermediateCrl : leafCrl
   });
   const profile: ValidationProfileInput = {

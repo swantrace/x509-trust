@@ -10,7 +10,7 @@ import {
   id_BasicConstraints,
   id_KeyUsage
 } from "pkijs";
-import { createInlinePkiEngine } from "../src/engine/pki-engine.ts";
+import { inlinePkiEngine } from "../src/engine/pki-engine.ts";
 
 function readPem(name: string): string {
   return readFileSync(
@@ -51,7 +51,7 @@ const checkDateMs = Date.parse(
     "utf8"
   ).trim()
 );
-const engine = createInlinePkiEngine();
+const engine = inlinePkiEngine;
 
 async function prepare(
   certificateChain: Uint8Array[],

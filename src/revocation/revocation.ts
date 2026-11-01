@@ -3,7 +3,7 @@ import type {
   RevocationMechanism
 } from "../profile/profile.ts";
 
-export interface EvidenceSummary {
+export interface RevocationSummary {
   certificateIndex: number;
   mechanism: RevocationMechanism;
   status: "good" | "revoked";
@@ -14,16 +14,18 @@ export interface EvidenceSummary {
   checkedAtMs: number;
 }
 
-export interface EvidenceAttempt {
+export interface RevocationAttempt {
   certificateIndex: number;
   mechanism: RevocationMechanism;
   status: "good" | "revoked" | "unknown";
-  evidence?: EvidenceSummary;
+  evidence?: RevocationSummary;
   code?: string;
   message: string;
+  source?: string;
+  durationMs?: number;
 }
 
-export interface EvidenceFinding {
+export interface RevocationFinding {
   certificateIndex: number;
   mechanism: RevocationMechanism;
   status: "good" | "revoked" | "unknown";
@@ -31,6 +33,8 @@ export interface EvidenceFinding {
   fresh: boolean;
   code?: string;
   message: string;
+  source?: string;
+  durationMs?: number;
   thisUpdateMs?: number;
   nextUpdateMs?: number;
   checkedAtMs?: number;
@@ -40,15 +44,19 @@ export interface CertificateFindings {
   certificateIndex: number;
   pathValid: true;
   revocation: {
-    crl: EvidenceFinding[];
-    ocsp: EvidenceFinding[];
+    crl: RevocationFinding[];
+    ocsp: RevocationFinding[];
   };
 }
 
-export type EvidenceDecision =
-  | { status: "good"; evidence: EvidenceSummary[] }
-  | { status: "revoked"; evidence: EvidenceSummary }
+export type RevocationDecision =
+  | { status: "good"; evidence: RevocationSummary[] }
+  | { status: "revoked"; evidence: RevocationSummary }
   | { status: "unknown"; message: string };
+
+export type CertificateRevocation = RevocationDecision & {
+  findings: CertificateFindings;
+};
 
 export function requiredMechanisms(
   requiredEvidence: RequiredEvidence
@@ -63,10 +71,10 @@ export function requiredMechanisms(
   }
 }
 
-export function decideRevocationEvidence(
+export function decideRevocation(
   requiredEvidence: RequiredEvidence,
-  attempts: readonly EvidenceAttempt[]
-): EvidenceDecision {
+  attempts: readonly RevocationAttempt[]
+): RevocationDecision {
   const revoked = attempts.find(
     (attempt) =>
       attempt.status === "revoked" && attempt.evidence?.authenticated === true
@@ -92,7 +100,7 @@ export function decideRevocationEvidence(
     if (good) return { status: "good", evidence: [good] };
   } else {
     const seen = new Set<RevocationMechanism>();
-    const evidence: EvidenceSummary[] = [];
+    const evidence: RevocationSummary[] = [];
     for (const attempt of attempts) {
       if (
         attempt.status !== "good" ||

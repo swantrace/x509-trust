@@ -6,8 +6,16 @@ import http, { type RequestListener } from "node:http";
 import type { AddressInfo } from "node:net";
 import { type TestContext, test } from "node:test";
 import { BasicOCSPResponse, OCSPRequest, OCSPResponse } from "pkijs";
-import { createHttpLoaders } from "../src/evidence/http-loaders.ts";
-import { createTrustValidator } from "../src/index.ts";
+import { inlinePkiEngine } from "../src/engine/pki-engine.ts";
+import {
+  createRevocationProvider,
+  createTrustValidator
+} from "../src/index.ts";
+import {
+  loadHttpCrl,
+  loadHttpOcsp,
+  resolveHttpOptions
+} from "../src/revocation/http-loaders.ts";
 
 function fixture(name: string) {
   return readFileSync(new URL(`./fixtures/${name}`, import.meta.url));
@@ -83,17 +91,18 @@ test("downloads DER and PEM CRLs from an actual local HTTP server", async (t) =>
         : fixture("crl/intermediate-revoked.crl.pem")
     );
   });
-  const loaders = createHttpLoaders({ allowPrivateAddresses: true });
+  const httpConfig = resolveHttpOptions({ allowPrivateAddresses: true });
   for (const path of ["/ca.crl", "/ca.pem"]) {
     assert.deepEqual(
-      Buffer.from(await loaders.loadCrl(origin + path)),
+      Buffer.from(await loadHttpCrl({ url: origin + path }, httpConfig)),
       crlDer("intermediate-revoked")
     );
   }
   assert.deepEqual(methods, ["GET", "GET"]);
 });
 
-test("POSTs a DER OCSP request identifying the certificate and issuing key", async (t) => {
+test("POSTs prepared OCSP request bytes without changing them", async (t) => {
+  const bodies: Buffer[] = [];
   let received: OCSPRequest | undefined;
   let contentType: string | undefined;
   let accept: string | undefined;
@@ -104,17 +113,33 @@ test("POSTs a DER OCSP request identifying the certificate and issuing key", asy
     accept = request.headers.accept;
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(chunk);
-    received = OCSPRequest.fromBER(Buffer.concat(chunks));
+    const body = Buffer.concat(chunks);
+    bodies.push(body);
+    received = OCSPRequest.fromBER(body);
     response.setHeader("Content-Type", "application/ocsp-response");
     response.end(fixture("ocsp/good.der"));
   });
-  const loaders = createHttpLoaders({ allowPrivateAddresses: true });
-  const data = await loaders.loadOcsp({
-    url: `${origin}/ocsp`,
-    certificate: new X509Certificate(fixture("leaf.pem")).raw,
-    issuerCertificate: new X509Certificate(fixture("intermediate.pem")).raw
+  const httpConfig = resolveHttpOptions({ allowPrivateAddresses: true });
+  const path = await inlinePkiEngine.preparePath({
+    certificateChain: [fixture("leaf.pem"), fixture("intermediate.pem")],
+    trustAnchors: [new X509Certificate(fixture("root.pem")).raw],
+    checkDateMs: checkDate.getTime()
   });
+  assert.ok(path.pathValid);
+  const requestDer = path.certificates[0].ocspRequestDer;
+  assert.ok(requestDer);
+  const callerBytes = Uint8Array.from(requestDer);
+  const pending = loadHttpOcsp(
+    {
+      url: `${origin}/ocsp`,
+      requestDer: callerBytes
+    },
+    httpConfig
+  );
+  callerBytes.fill(0);
+  const data = await pending;
   assert.deepEqual(Buffer.from(data), fixture("ocsp/good.der"));
+  assert.deepEqual(bodies, [Buffer.from(requestDer)]);
   assert.equal(method, "POST");
   assert.equal(contentType, "application/ocsp-request");
   assert.equal(accept, "application/ocsp-response");
@@ -220,10 +245,10 @@ test("rejects redirects and HTTP errors without following their Location", async
     });
     response.end();
   });
-  const loaders = createHttpLoaders({ allowPrivateAddresses: true });
+  const httpConfig = resolveHttpOptions({ allowPrivateAddresses: true });
   for (const status of [302, 404, 500]) {
     await assert.rejects(
-      loaders.loadCrl(`${origin}/${status}`),
+      loadHttpCrl({ url: `${origin}/${status}` }, httpConfig),
       new RegExp(String(status))
     );
   }
@@ -236,13 +261,13 @@ test("enforces size limits on declared and chunked response bodies", async (t) =
     response.write(Buffer.alloc(128));
     response.end(Buffer.alloc(128));
   });
-  const loaders = createHttpLoaders({
+  const httpConfig = resolveHttpOptions({
     allowPrivateAddresses: true,
     maxResponseBytes: 128
   });
   for (const path of ["/declared", "/chunked"]) {
     await assert.rejects(
-      loaders.loadCrl(origin + path),
+      loadHttpCrl({ url: origin + path }, httpConfig),
       /exceeds maxResponseBytes/
     );
   }
@@ -253,11 +278,38 @@ test("the deadline includes a stalled response body", async (t) => {
     response.writeHead(200);
     response.flushHeaders();
   });
-  const loaders = createHttpLoaders({
+  const httpConfig = resolveHttpOptions({
     allowPrivateAddresses: true,
     timeoutMs: 50
   });
-  await assert.rejects(loaders.loadCrl(origin), /abort/i);
+  await assert.rejects(loadHttpCrl({ url: origin }, httpConfig), /abort/i);
+});
+
+test("validation findings identify actual HTTP timeouts before the overall deadline", async (t) => {
+  const origin = await startServer(t, (_request, response) => {
+    response.writeHead(200);
+    response.flushHeaders();
+  });
+  routeFixtureUrls(t, origin);
+  const validator = createTrustValidator({
+    trustAnchors: [fixture("root.pem")],
+    now: () => checkDate.getTime(),
+    ocspLoader: false,
+    http: { allowPrivateAddresses: true, timeoutMs: 50 },
+    deadlineMs: 5000
+  });
+  const result = await validator.verify({
+    certificateChain: [fixture("leaf.pem"), fixture("intermediate.pem")]
+  });
+  assert.equal(result.valid, false);
+  assert.equal(result.code, "REVOCATION_STATUS_UNKNOWN");
+  assert.equal(result.findings?.length, 2);
+  for (const certificate of result.findings!) {
+    const attempt = certificate.revocation.crl[0];
+    assert.equal(attempt.code, "EVIDENCE_TIMEOUT");
+    assert.ok(attempt.source?.startsWith("http://crl.example.test/"));
+    assert.ok(attempt.durationMs! >= 0);
+  }
 });
 
 test("an external AbortSignal cancels a built-in HTTP request", async (t) => {
@@ -269,12 +321,15 @@ test("an external AbortSignal cancels a built-in HTTP request", async (t) => {
     response.flushHeaders();
     requestStarted.then(() => response.end());
   });
-  const loaders = createHttpLoaders({
+  const httpConfig = resolveHttpOptions({
     allowPrivateAddresses: true,
     timeoutMs: 5000
   });
   const controller = new AbortController();
-  const pending = loaders.loadCrl(origin, { signal: controller.signal });
+  const pending = loadHttpCrl(
+    { url: origin, signal: controller.signal },
+    httpConfig
+  );
   controller.abort();
   await assert.rejects(pending, /abort/i);
 });
@@ -285,7 +340,7 @@ test("rejects non-public literal addresses and unsafe URLs before opening a conn
     calls++;
     throw new Error("Unexpected request");
   }) as typeof http.request);
-  const loaders = createHttpLoaders();
+  const httpConfig = resolveHttpOptions();
   for (const host of [
     "127.0.0.1",
     "2130706433",
@@ -296,7 +351,7 @@ test("rejects non-public literal addresses and unsafe URLs before opening a conn
     "[fd00::1]"
   ]) {
     await assert.rejects(
-      loaders.loadCrl(`http://${host}/ca.crl`),
+      loadHttpCrl({ url: `http://${host}/ca.crl` }, httpConfig),
       /public addresses/
     );
   }
@@ -305,7 +360,7 @@ test("rejects non-public literal addresses and unsafe URLs before opening a conn
     "http://user:password@example.org/ca.crl",
     "http://example.org/ca.crl#fragment"
   ]) {
-    await assert.rejects(loaders.loadCrl(url), /HTTP\(S\)/);
+    await assert.rejects(loadHttpCrl({ url }, httpConfig), /HTTP\(S\)/);
   }
   assert.equal(calls, 0);
 });
@@ -326,7 +381,7 @@ test("blocks a hostname that resolves to a private address at connection time", 
   const url = new URL(origin);
   url.hostname = "private.example.test";
   await assert.rejects(
-    createHttpLoaders().loadCrl(url.toString()),
+    loadHttpCrl({ url: url.toString() }, resolveHttpOptions()),
     /public addresses/
   );
   assert.equal(hits, 0);
@@ -334,27 +389,34 @@ test("blocks a hostname that resolves to a private address at connection time", 
 
 test("an origin allowlist still applies when private addresses are explicitly enabled", async (t) => {
   const origin = await startServer(t, (_request, response) => response.end());
-  const loaders = createHttpLoaders({
+  const httpConfig = resolveHttpOptions({
     allowPrivateAddresses: true,
     allowedOrigins: ["https://approved.example.org"]
   });
-  await assert.rejects(loaders.loadCrl(origin), /origin is not allowed/);
+  await assert.rejects(
+    loadHttpCrl({ url: origin }, httpConfig),
+    /origin is not allowed/
+  );
 });
 
 test("rejects invalid HTTP settings at configuration time", () => {
   assert.throws(
     () =>
-      createHttpLoaders({
+      resolveHttpOptions({
         allowPrivateAddresses: "false" as unknown as boolean
       }),
     TypeError
   );
   for (const value of [0, -1, NaN, Infinity, 1.5]) {
-    assert.throws(() => createHttpLoaders({ timeoutMs: value }), TypeError);
+    assert.throws(() => resolveHttpOptions({ timeoutMs: value }), TypeError);
     assert.throws(
-      () => createHttpLoaders({ maxResponseBytes: value }),
+      () => resolveHttpOptions({ maxResponseBytes: value }),
+      TypeError
+    );
+    assert.throws(
+      () => createRevocationProvider({ http: { timeoutMs: value } }),
       TypeError
     );
   }
-  assert.throws(() => createHttpLoaders({ timeoutMs: 2 ** 32 }), TypeError);
+  assert.throws(() => resolveHttpOptions({ timeoutMs: 2 ** 32 }), TypeError);
 });

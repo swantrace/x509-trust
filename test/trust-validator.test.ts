@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { inlinePkiEngine } from "../src/engine/pki-engine.ts";
 import { createMemoryCache, createTrustValidator } from "../src/index.ts";
 
 function readCertificate(name: string): string {
@@ -41,13 +42,16 @@ const checkDate = new Date(
 );
 const now = () => checkDate.getTime();
 
-test("public API validates a full path using CRLs for leaf and intermediate", async () => {
+test("public API validates a full path using CRLs for leaf and intermediate", async (t) => {
   const urls: string[] = [];
+  const engine = { ...inlinePkiEngine };
+  const validateCrl = t.mock.method(engine, "validateCrl");
   const validator = createTrustValidator({
     trustAnchors: [root],
+    engine,
     now,
-    loadOcsp: false,
-    async loadCrl(url) {
+    ocspLoader: false,
+    async crlLoader({ url }) {
       urls.push(url);
       return loadCrl(url);
     }
@@ -56,6 +60,7 @@ test("public API validates a full path using CRLs for leaf and intermediate", as
     certificateChain: [leaf, intermediate]
   });
   assert.equal(result.valid, true);
+  assert.equal(validateCrl.mock.callCount(), 2);
   assert.equal(
     result.trustAnchorFingerprint256,
     new X509Certificate(root).fingerprint256
@@ -119,20 +124,32 @@ test("public API validates a full path using CRLs for leaf and intermediate", as
     certificateChain: [leaf, intermediate]
   });
   assert.equal(repeated.valid, true);
+  assert.equal(validateCrl.mock.callCount(), 4);
   assert.equal(
     repeated.leafCertificate.fingerprint256,
     new X509Certificate(leaf).fingerprint256
   );
 });
 
-test("public API supports OCSP callbacks with DER certificate and issuer context", async () => {
+test("public API supports OCSP request objects with prepared DER and issuer context", async (t) => {
   const urls: string[] = [];
+  const engine = { ...inlinePkiEngine };
+  const validateOcsp = t.mock.method(engine, "validateOcsp");
   const validator = createTrustValidator({
     trustAnchors: [root],
+    engine,
     now,
-    loadCrl: false,
-    async loadOcsp({ url, certificate, issuerCertificate }) {
+    crlLoader: false,
+    async ocspLoader({
+      url,
+      certificate,
+      issuerCertificate,
+      requestDer,
+      signal
+    }) {
       urls.push(url);
+      assert.ok(requestDer.byteLength > 0);
+      assert.ok(signal instanceof AbortSignal);
       const client = new X509Certificate(certificate);
       assert.equal(
         client.checkIssued(new X509Certificate(issuerCertificate)),
@@ -147,6 +164,7 @@ test("public API supports OCSP callbacks with DER certificate and issuer context
     certificateChain: [new X509Certificate(leaf).raw, intermediate, root]
   });
   assert.equal(result.valid, true);
+  assert.equal(validateOcsp.mock.callCount(), 2);
   assert.deepEqual(urls, [
     "http://ocsp.example.test/intermediate",
     "http://ocsp.example.test/root"
@@ -158,8 +176,8 @@ test("reports revoked while other certificate pipelines may still be pending", a
   const validator = createTrustValidator({
     trustAnchors: [root],
     now,
-    loadOcsp: false,
-    async loadCrl(url) {
+    ocspLoader: false,
+    async crlLoader({ url }) {
       loads++;
       return loadCrl(url);
     }
@@ -185,8 +203,8 @@ test("a good leaf status is insufficient when intermediate status cannot be esta
   const validator = createTrustValidator({
     trustAnchors: [root],
     now,
-    loadOcsp: false,
-    async loadCrl(url) {
+    ocspLoader: false,
+    async crlLoader({ url }) {
       if (url.endsWith("/root.crl")) throw new Error("root CRL unavailable");
       return loadCrl(url);
     }
@@ -207,7 +225,7 @@ test("rejects invalid, untrusted and expired paths before calling loaders", asyn
   const validator = createTrustValidator({
     trustAnchors: [readCertificate("untrusted-root")],
     now,
-    async loadCrl(url) {
+    async crlLoader({ url }) {
       loads++;
       return loadCrl(url);
     }
@@ -225,7 +243,7 @@ test("rejects invalid, untrusted and expired paths before calling loaders", asyn
   const trusted = createTrustValidator({
     trustAnchors: [root],
     now,
-    async loadCrl(url) {
+    async crlLoader({ url }) {
       loads++;
       return loadCrl(url);
     }
@@ -244,8 +262,8 @@ test("does not silently skip revocation checks when both loaders are disabled", 
   const validator = createTrustValidator({
     trustAnchors: [root],
     now,
-    loadCrl: false,
-    loadOcsp: false
+    crlLoader: false,
+    ocspLoader: false
   });
   const result = await validator.verify({
     certificateChain: [leaf, intermediate]
@@ -260,11 +278,11 @@ test("falls back from unknown OCSP status to valid CRLs", async () => {
   const validator = createTrustValidator({
     trustAnchors: [root],
     now,
-    async loadOcsp() {
+    async ocspLoader() {
       ocspLoads++;
       return readOcsp("unknown");
     },
-    async loadCrl(url) {
+    async crlLoader({ url }) {
       crlLoads++;
       return loadCrl(url);
     }
@@ -281,8 +299,8 @@ test("falls back from OCSP transport failures to valid CRLs", async () => {
   const validator = createTrustValidator({
     trustAnchors: [root],
     now,
-    loadCrl,
-    async loadOcsp() {
+    crlLoader: ({ url }) => loadCrl(url),
+    async ocspLoader() {
       throw new Error("OCSP offline");
     }
   });
@@ -297,10 +315,10 @@ test("never overrides an authenticated revoked response with a good CRL", async 
   const validator = createTrustValidator({
     trustAnchors: [root],
     now,
-    async loadOcsp() {
+    async ocspLoader() {
       return readOcsp("revoked");
     },
-    async loadCrl() {
+    async crlLoader() {
       crlLoads++;
       return readCrl("intermediate-clean");
     }
@@ -321,8 +339,8 @@ test("returns a validation failure when all evidence is unusable", async () => {
   const validator = createTrustValidator({
     trustAnchors: [root],
     now,
-    loadOcsp: false,
-    async loadCrl() {
+    ocspLoader: false,
+    async crlLoader() {
       return Buffer.from("invalid CRL");
     }
   });
@@ -340,8 +358,8 @@ test("shares injected cache storage but still validates trust for every request"
     trustAnchors: [root],
     cache,
     now,
-    loadOcsp: false as const,
-    async loadCrl(url: string) {
+    ocspLoader: false as const,
+    async crlLoader({ url }: { url: string }) {
       loads++;
       return loadCrl(url);
     }
@@ -368,8 +386,8 @@ test("snapshots configured trust anchors and reports configuration errors early"
   const anchor = Buffer.from(new X509Certificate(root).raw);
   const validator = createTrustValidator({
     trustAnchors: [anchor],
-    loadCrl,
-    loadOcsp: false,
+    crlLoader: ({ url }) => loadCrl(url),
+    ocspLoader: false,
     now
   });
   anchor.fill(0);

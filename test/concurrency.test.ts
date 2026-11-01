@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { CacheStore } from "../src/evidence/cache.ts";
 import {
   createTrustValidator,
+  type DiagnosticEvent,
   type ValidationProfileInput
 } from "../src/index.ts";
+import type { CacheStore } from "../src/revocation/cache.ts";
 import {
   createCrl,
   createOcspResponse,
@@ -13,12 +14,10 @@ import {
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
+  const promise = new Promise<T>((res) => {
     resolve = res;
-    reject = rej;
   });
-  return { promise, resolve, reject };
+  return { promise, resolve };
 }
 
 const checkDate = new Date("2026-10-15T00:00:00Z");
@@ -76,8 +75,8 @@ test("starts every non-anchor evidence pipeline before any of them completes", {
     trustAnchors: [crlChain.root.der],
     profile: profile(["crl"]),
     now,
-    loadOcsp: false,
-    loadCrl: async (url) => {
+    ocspLoader: false,
+    crlLoader: async ({ url }) => {
       started.add(url);
       if (started.size === 2) bothStarted.resolve();
       const gate = deferred<Uint8Array>();
@@ -112,8 +111,8 @@ test("a stalled other certificate does not delay a confirmed revoked result", {
     trustAnchors: [ocspChain.root.der],
     profile: profile(["ocsp", "crl"]),
     now,
-    loadCrl: false,
-    loadOcsp: async ({ url, signal }) => {
+    crlLoader: false,
+    ocspLoader: async ({ url, signal }) => {
       if (url === leafOcspUrl) return leafRevokedOcsp;
       intermediateStarted.resolve();
       // Deliberately ignores abort: a stalled custom loader must not block a
@@ -148,8 +147,8 @@ test("falls back within one certificate while another certificate is still pendi
     trustAnchors: [crlChain.root.der],
     profile: profile(["crl"]),
     now,
-    loadOcsp: false,
-    loadCrl: async (url) => {
+    ocspLoader: false,
+    crlLoader: async ({ url }) => {
       if (url === leafCrlOne) return Buffer.from("invalid CRL");
       if (url === leafCrlTwo) {
         secondLeafStarted.resolve();
@@ -167,6 +166,97 @@ test("falls back within one certificate while another certificate is still pendi
   assert.equal(result.valid, true);
 });
 
+test("deadline findings preserve completed attempts and identify interrupted sources", {
+  timeout: 5000
+}, async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const leafCompleted = deferred();
+  const intermediateStarted = deferred();
+  const releaseIntermediate = deferred<Uint8Array>();
+  t.after(() => releaseIntermediate.resolve(intermediateGoodCrl));
+  const events: DiagnosticEvent[] = [];
+  let intermediateSignal: AbortSignal | undefined;
+  const validator = createTrustValidator({
+    trustAnchors: [crlChain.root.der],
+    profile: profile(["crl"]),
+    now,
+    deadlineMs: 50,
+    ocspLoader: false,
+    crlLoader: async ({ url, signal }) => {
+      if (url === leafCrlOne) {
+        throw new DOMException("private transport details", "TimeoutError");
+      }
+      if (url === leafCrlTwo) return leafGoodCrl;
+      intermediateSignal = signal;
+      intermediateStarted.resolve();
+      return releaseIntermediate.promise;
+    },
+    onDiagnostic(event) {
+      events.push(event);
+      if (event.certificateIndex === 0 && event.status === "good") {
+        leafCompleted.resolve();
+      }
+    }
+  });
+  const verification = validator.verify({
+    certificateChain: [crlChain.leaf.der, crlChain.intermediate.der]
+  });
+  await Promise.all([leafCompleted.promise, intermediateStarted.promise]);
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(50);
+  const result = await verification;
+  assert.equal(result.valid, false);
+  assert.equal(result.code, "RESOURCE_LIMIT_EXCEEDED");
+  assert.equal(intermediateSignal?.aborted, true);
+  assert.deepEqual(
+    result.findings?.map(({ certificateIndex, revocation }) => ({
+      certificateIndex,
+      attempts: revocation.crl.map(({ source, status, code }) => ({
+        source,
+        status,
+        code
+      }))
+    })),
+    [
+      {
+        certificateIndex: 0,
+        attempts: [
+          { source: leafCrlOne, status: "unknown", code: "EVIDENCE_TIMEOUT" },
+          { source: leafCrlTwo, status: "good", code: undefined }
+        ]
+      },
+      {
+        certificateIndex: 1,
+        attempts: [
+          {
+            source: intermediateCrlUrl,
+            status: "unknown",
+            code: "EVIDENCE_DEADLINE_EXCEEDED"
+          }
+        ]
+      }
+    ]
+  );
+  for (const finding of result.findings![0].revocation.crl) {
+    assert.ok(finding.durationMs! >= 0);
+  }
+  assert.ok(
+    events.some(
+      (event) =>
+        event.event === "revocation_error" && event.code === "EVIDENCE_TIMEOUT"
+    )
+  );
+  assert.equal(
+    JSON.stringify(events).includes("private transport details"),
+    false
+  );
+
+  const snapshot = structuredClone(result);
+  releaseIntermediate.resolve(intermediateGoodCrl);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(result, snapshot);
+});
+
 test("external abort reaches willing loaders and rejects with AbortError", {
   timeout: 5000
 }, async () => {
@@ -176,11 +266,10 @@ test("external abort reaches willing loaders and rejects with AbortError", {
     trustAnchors: [crlChain.root.der],
     profile: profile(["crl"]),
     now,
-    loadOcsp: false,
-    loadCrl: (_url, options) =>
+    ocspLoader: false,
+    crlLoader: ({ signal }) =>
       new Promise<Uint8Array>((_resolve, reject) => {
         started.resolve();
-        const signal = options?.signal;
         assert.ok(signal);
         if (signal.aborted) {
           observedAbort.resolve();
@@ -230,8 +319,8 @@ test("a slow cache write does not delay an authenticated revoked result", {
     profile: profile(["ocsp"]),
     now,
     cache,
-    loadCrl: false,
-    loadOcsp: async ({ url }) =>
+    crlLoader: false,
+    ocspLoader: async ({ url }) =>
       url === leafOcspUrl ? leafRevokedOcsp : intermediateRevokedOcsp
   });
   const result = await validator.verify({
@@ -246,8 +335,8 @@ test("an explicit checkDate is copied before asynchronous validation", async () 
     trustAnchors: [crlChain.root.der],
     profile: profile(["crl"]),
     now,
-    loadOcsp: false,
-    loadCrl: async (url) =>
+    ocspLoader: false,
+    crlLoader: async ({ url }) =>
       url === intermediateCrlUrl ? intermediateGoodCrl : leafGoodCrl
   });
   const date = new Date(checkDate);

@@ -72,33 +72,33 @@ function validators({
   sourceOrder,
   crlResponses,
   ocspResponses,
-  loadCrl = true,
-  loadOcsp = true,
+  crlLoader = true,
+  ocspLoader = true,
   calls
 }: {
   requiredEvidence: RequiredEvidence;
   sourceOrder: RevocationMechanism[];
   crlResponses: Record<string, Uint8Array>;
   ocspResponses: Record<string, Uint8Array>;
-  loadCrl?: boolean;
-  loadOcsp?: boolean;
+  crlLoader?: boolean;
+  ocspLoader?: boolean;
   calls: { crl: string[]; ocsp: string[] };
 }) {
   return createTrustValidator({
     trustAnchors: [chain.root.der],
     profile: profile(requiredEvidence, sourceOrder),
     now,
-    loadCrl:
-      loadCrl === false
+    crlLoader:
+      crlLoader === false
         ? false
-        : async (url) => {
+        : async ({ url }) => {
             calls.crl.push(url);
             const response = crlResponses[url];
             if (!response) throw new Error(`No CRL for ${url}`);
             return response;
           },
-    loadOcsp:
-      loadOcsp === false
+    ocspLoader:
+      ocspLoader === false
         ? false
         : async ({ url }) => {
             calls.ocsp.push(url);
@@ -129,7 +129,7 @@ test("tries each URL for a required mechanism in order and falls back", async ()
       [leafCrl[0]]: Buffer.from("invalid CRL")
     },
     ocspResponses: goodOcsps,
-    loadOcsp: false,
+    ocspLoader: false,
     calls
   });
   const result = await validator.verify({ certificateChain: chainInput });
@@ -227,7 +227,7 @@ test("registered profile rejects a disabled required loader at configuration tim
       createTrustValidator({
         trustAnchors: [chain.root.der],
         profile: profile("crl", ["ocsp", "crl"]),
-        loadCrl: false
+        crlLoader: false
       }),
     (error: unknown) => {
       assert.ok(error instanceof ProfileError);
@@ -240,7 +240,7 @@ test("registered profile rejects a disabled required loader at configuration tim
       createTrustValidator({
         trustAnchors: [chain.root.der],
         profile: profile("ocsp", ["ocsp"]),
-        loadOcsp: false
+        ocspLoader: false
       }),
     (error: unknown) => {
       assert.ok(error instanceof ProfileError);

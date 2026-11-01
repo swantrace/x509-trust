@@ -3,18 +3,17 @@ import type { DiagnosticCallback } from "../diagnostics.ts";
 import type { CertificateInput } from "../engine/certificate-path.ts";
 import type { PkiEngine } from "../engine/pki-engine.ts";
 import { invalidProfile } from "../errors.ts";
-import type { CacheStore } from "../evidence/cache.ts";
-import type { EvidenceProvider } from "../evidence/evidence-provider.ts";
+import type { CacheStore } from "../revocation/cache.ts";
+import type { HttpOptions } from "../revocation/http-loaders.ts";
 import type {
-  CrlLoadOptions,
-  HttpOptions,
-  OcspLoadOptions
-} from "../evidence/http-loaders.ts";
+  RevocationLoaderOptions,
+  RevocationProvider
+} from "../revocation/revocation-provider.ts";
 import {
   createTrustValidator,
   type TrustValidator,
   type ValidationResult
-} from "../validator/trust-validator.ts";
+} from "../trust-validator.ts";
 import {
   compileValidationProfile,
   type ProfileVersion,
@@ -31,12 +30,9 @@ export interface ValidationProfileRegistration {
   rules?: readonly TrustRuleRegistration[];
 }
 
-export interface ValidationProfileRegistryOptions {
-  loadCrl?:
-    | ((url: string, options?: CrlLoadOptions) => Promise<Uint8Array>)
-    | false;
-  loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
-  provider?: EvidenceProvider;
+export interface ValidationProfileRegistryOptions
+  extends RevocationLoaderOptions {
+  provider?: RevocationProvider;
   engine?: PkiEngine;
   http?: HttpOptions;
   deadlineMs?: number;

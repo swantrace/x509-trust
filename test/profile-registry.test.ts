@@ -90,15 +90,14 @@ function makeRegistry(
   const calls = { crl: [] as string[] };
   const registry = createValidationProfileRegistry({
     now: () => checkDate.getTime(),
-    loadOcsp: false,
-    loadCrl:
-      loadCrl ??
-      (async (url) => {
-        calls.crl.push(url);
-        const response = crlByUrl.get(url);
-        if (!response) throw new Error(`No CRL for ${url}`);
-        return response;
-      })
+    ocspLoader: false,
+    crlLoader: async ({ url }) => {
+      if (loadCrl) return loadCrl(url);
+      calls.crl.push(url);
+      const response = crlByUrl.get(url);
+      if (!response) throw new Error(`No CRL for ${url}`);
+      return response;
+    }
   });
   for (const registration of registrations) {
     const profile =
