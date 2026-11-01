@@ -6,9 +6,9 @@ import { Enumerated, OctetString } from "asn1js";
 import { BasicOCSPResponse, Certificate, Extension, OCSPResponse } from "pkijs";
 import { validateOcsp } from "../src/engine/ocsp.ts";
 
-function readCertificate(name: string): Certificate {
+function readDer(name: string): Uint8Array<ArrayBuffer> {
   const pem = readFileSync(new URL(`./fixtures/${name}.pem`, import.meta.url));
-  return Certificate.fromBER(new X509Certificate(pem).raw);
+  return Uint8Array.from(new X509Certificate(pem).raw);
 }
 
 function readResponse(name: string) {
@@ -32,9 +32,9 @@ function modifiedResponse(
   return new Uint8Array(outer.toSchema().toBER(false));
 }
 
-const certificate = readCertificate("leaf");
-const issuerCertificate = readCertificate("intermediate");
-const checkDate = new Date(
+const certificateDer = readDer("leaf");
+const issuerDer = readDer("intermediate");
+const checkDateMs = Date.parse(
   readFileSync(
     new URL("./fixtures/validation-time.txt", import.meta.url),
     "utf8"
@@ -48,10 +48,10 @@ for (const [name, subject, status] of [
 ]) {
   test(`authenticates the signed ${name} OCSP fixture and returns ${status}`, async () => {
     const result = await validateOcsp({
-      certificate: readCertificate(subject),
-      issuerCertificate,
+      certificateDer: readDer(subject),
+      issuerDer,
       response: readResponse(name),
-      checkDate
+      checkDateMs
     });
     assert.equal(result.status, status);
     if (result.status === "unknown")
@@ -61,21 +61,25 @@ for (const [name, subject, status] of [
 
 test("checks the intermediate using a response signed by its root issuer", async () => {
   const result = await validateOcsp({
-    certificate: issuerCertificate,
-    issuerCertificate: readCertificate("root"),
+    certificateDer: issuerDer,
+    issuerDer: readDer("root"),
     response: readResponse("intermediate-good"),
-    checkDate
+    checkDateMs
   });
   assert.equal(result.status, "good");
 });
 
 test("matches issuer hashes as well as serial number", async () => {
-  assert.ok(certificate.serialNumber.isEqual(issuerCertificate.serialNumber));
+  assert.ok(
+    Certificate.fromBER(certificateDer).serialNumber.isEqual(
+      Certificate.fromBER(issuerDer).serialNumber
+    )
+  );
   const result = await validateOcsp({
-    certificate,
-    issuerCertificate,
+    certificateDer,
+    issuerDer,
     response: readResponse("intermediate-good"),
-    checkDate
+    checkDateMs
   });
   assert.ok(result.status === "unknown");
   assert.equal(result.code, "OCSP_CERTIFICATE_MISMATCH");
@@ -83,10 +87,10 @@ test("matches issuer hashes as well as serial number", async () => {
 
 test("rejects a response for a different client certificate", async () => {
   const result = await validateOcsp({
-    certificate: readCertificate("revoked-leaf"),
-    issuerCertificate,
+    certificateDer: readDer("revoked-leaf"),
+    issuerDer,
     response: readResponse("good"),
-    checkDate
+    checkDateMs
   });
   assert.ok(result.status === "unknown");
   assert.equal(result.code, "OCSP_CERTIFICATE_MISMATCH");
@@ -98,10 +102,10 @@ test("reports unknown for an expired OCSP response", async () => {
     Uint8Array.from(outer.responseBytes!.response.valueBlock.valueHexView)
   );
   const result = await validateOcsp({
-    certificate,
-    issuerCertificate,
+    certificateDer,
+    issuerDer,
     response: readResponse("good"),
-    checkDate: basic.tbsResponseData.responses[0].nextUpdate
+    checkDateMs: basic.tbsResponseData.responses[0].nextUpdate!.getTime()
   });
   assert.ok(result.status === "unknown");
   assert.equal(result.code, "OCSP_EXPIRED");
@@ -113,12 +117,10 @@ test("reports unknown before the response's thisUpdate", async () => {
     Uint8Array.from(outer.responseBytes!.response.valueBlock.valueHexView)
   );
   const result = await validateOcsp({
-    certificate,
-    issuerCertificate,
+    certificateDer,
+    issuerDer,
     response: readResponse("good"),
-    checkDate: new Date(
-      basic.tbsResponseData.responses[0].thisUpdate.getTime() - 1000
-    )
+    checkDateMs: basic.tbsResponseData.responses[0].thisUpdate.getTime() - 1000
   });
   assert.ok(result.status === "unknown");
   assert.equal(result.code, "OCSP_NOT_YET_VALID");
@@ -130,10 +132,10 @@ test("rejects a modified OCSP signature", async () => {
     signature[signature.length - 1] ^= 1;
   });
   const result = await validateOcsp({
-    certificate,
-    issuerCertificate,
+    certificateDer,
+    issuerDer,
     response,
-    checkDate
+    checkDateMs
   });
   assert.ok(result.status === "unknown");
   assert.equal(result.code, "INVALID_OCSP_SIGNATURE");
@@ -144,25 +146,25 @@ test("can authenticate a direct-issuer response without embedded certificates", 
     delete basic.certs;
   });
   const result = await validateOcsp({
-    certificate,
-    issuerCertificate,
+    certificateDer,
+    issuerDer,
     response,
-    checkDate
+    checkDateMs
   });
   assert.equal(result.status, "good");
 });
 
 test("does not trust an embedded certificate with the issuer's name and a different key", async () => {
-  const impostor = readCertificate("untrusted-root");
-  impostor.subject = issuerCertificate.subject;
+  const impostor = Certificate.fromBER(readDer("untrusted-root"));
+  impostor.subject = Certificate.fromBER(issuerDer).subject;
   const response = modifiedResponse((basic) => {
     basic.certs = [impostor];
   });
   const result = await validateOcsp({
-    certificate,
-    issuerCertificate,
+    certificateDer,
+    issuerDer,
     response,
-    checkDate
+    checkDateMs
   });
   assert.equal(result.status, "good");
 });
@@ -176,10 +178,10 @@ test("rejects malformed OCSP data and unsuccessful responder status", async () =
     [new Uint8Array(failed.toSchema().toBER(false)), "OCSP_RESPONDER_ERROR"]
   ] as const) {
     const result = await validateOcsp({
-      certificate,
-      issuerCertificate,
+      certificateDer,
+      issuerDer,
       response,
-      checkDate
+      checkDateMs
     });
     assert.ok(result.status === "unknown");
     assert.equal(result.code, code);
@@ -191,10 +193,10 @@ test("reports unknown when nextUpdate is absent", async () => {
     delete basic.tbsResponseData.responses[0].nextUpdate;
   });
   const result = await validateOcsp({
-    certificate,
-    issuerCertificate,
+    certificateDer,
+    issuerDer,
     response,
-    checkDate
+    checkDateMs
   });
   assert.ok(result.status === "unknown");
   assert.equal(result.code, "OCSP_MISSING_NEXT_UPDATE");
@@ -205,10 +207,10 @@ test("rejects duplicate certificate status entries", async () => {
     basic.tbsResponseData.responses.push(basic.tbsResponseData.responses[0]);
   });
   const result = await validateOcsp({
-    certificate,
-    issuerCertificate,
+    certificateDer,
+    issuerDer,
     response,
-    checkDate
+    checkDateMs
   });
   assert.ok(result.status === "unknown");
   assert.equal(result.code, "OCSP_CERTIFICATE_MISMATCH");
@@ -225,23 +227,25 @@ test("rejects unsupported critical response extensions", async () => {
     ];
   });
   const result = await validateOcsp({
-    certificate,
-    issuerCertificate,
+    certificateDer,
+    issuerDer,
     response,
-    checkDate
+    checkDateMs
   });
   assert.ok(result.status === "unknown");
   assert.equal(result.code, "UNSUPPORTED_OCSP_RESPONSE");
 });
 
-test("rejects an invalid check date", async () => {
-  await assert.rejects(
-    validateOcsp({
-      certificate,
-      issuerCertificate,
-      response: readResponse("good"),
-      checkDate: new Date(NaN)
-    }),
-    TypeError
+test("reports unknown for an invalid validation timestamp", async () => {
+  const result = await validateOcsp({
+    certificateDer,
+    issuerDer,
+    response: readResponse("good"),
+    checkDateMs: NaN
+  });
+  assert.equal(result.status, "unknown");
+  assert.equal(
+    result.status === "unknown" && result.code,
+    "INVALID_OCSP_RESPONSE"
   );
 });

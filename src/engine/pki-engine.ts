@@ -1,5 +1,5 @@
 import { X509Certificate } from "node:crypto";
-import { BitString, fromBER } from "asn1js";
+import { BitString } from "asn1js";
 import {
   BasicConstraints,
   Certificate,
@@ -11,19 +11,19 @@ import {
   type CertificateInput,
   validateCertificatePath
 } from "./certificate-path.ts";
-import { type CrlValidationResult, validateCrl } from "./crl.ts";
+import { validateCrl } from "./crl.ts";
+import { parseDer } from "./der.ts";
 import {
   type CertificateFacts,
   extractCertificateFacts,
   extractLeafCertificate,
   type ValidatedLeafCertificate
 } from "./leaf-certificate.ts";
-import { type OcspValidationResult, validateOcsp } from "./ocsp.ts";
+import { validateOcsp } from "./ocsp.ts";
 import { getRevocationEndpoints } from "./revocation-endpoints.ts";
 
 const MAX_CERTIFICATE_CHAIN_LENGTH = 16;
 const MAX_TRUST_ANCHORS = 32;
-const MAX_CERTIFICATE_DER_BYTES = 1024 * 1024;
 const KEY_CERT_SIGN = 0x04;
 const OCSP_CERT_ID_HASH = "SHA-1";
 
@@ -73,43 +73,8 @@ export interface PkiEngine {
     checkDateMs: number;
     signal?: AbortSignal;
   }): Promise<PreparedPathResult>;
-  validateCrl(options: {
-    certificateDer: Uint8Array;
-    issuerDer: Uint8Array;
-    crl: Uint8Array;
-    checkDateMs?: number;
-    signal?: AbortSignal;
-  }): Promise<CrlValidationResult>;
-  validateOcsp(options: {
-    certificateDer: Uint8Array;
-    issuerDer: Uint8Array;
-    response: Uint8Array;
-    checkDateMs?: number;
-    signal?: AbortSignal;
-  }): Promise<OcspValidationResult>;
-}
-
-function snapshotBinary(
-  input: Uint8Array,
-  label: string
-): Uint8Array<ArrayBuffer> {
-  const bytes = Uint8Array.from(input);
-  if (bytes.byteLength === 0 || bytes.byteLength > MAX_CERTIFICATE_DER_BYTES) {
-    throw new TypeError(`${label} has an unsupported DER size`);
-  }
-  return bytes;
-}
-
-function snapshotBytes(
-  input: Uint8Array,
-  label: string
-): Uint8Array<ArrayBuffer> {
-  const bytes = snapshotBinary(input, label);
-  const parsed = fromBER(bytes);
-  if (parsed.offset < 0 || parsed.offset !== bytes.byteLength) {
-    throw new TypeError(`${label} must contain exactly one DER value`);
-  }
-  return bytes;
+  validateCrl: typeof validateCrl;
+  validateOcsp: typeof validateOcsp;
 }
 
 function normalizeCertificate(
@@ -117,13 +82,13 @@ function normalizeCertificate(
   label: string
 ): Uint8Array<ArrayBuffer> {
   if (typeof input === "string") {
-    return snapshotBytes(new X509Certificate(input).raw, label);
+    return parseDer(new X509Certificate(input).raw, label).bytes;
   }
   const bytes = Uint8Array.from(input);
   const header = new TextDecoder("ascii").decode(bytes.subarray(0, 11));
   return header === "-----BEGIN "
-    ? snapshotBytes(new X509Certificate(input).raw, label)
-    : snapshotBytes(bytes, label);
+    ? parseDer(new X509Certificate(input).raw, label).bytes
+    : parseDer(bytes, label).bytes;
 }
 
 function extensionValue<T>(
@@ -274,8 +239,8 @@ export function createInlinePkiEngine(): PkiEngine {
         normalizedChain = certificateChain.map((input, index) =>
           normalizeCertificate(input, `certificateChain[${index}]`)
         );
-        normalizedAnchors = trustAnchors.map((anchor, index) =>
-          snapshotBytes(anchor, `trustAnchors[${index}]`)
+        normalizedAnchors = trustAnchors.map(
+          (anchor, index) => parseDer(anchor, `trustAnchors[${index}]`).bytes
         );
       } catch {
         return {
@@ -379,52 +344,7 @@ export function createInlinePkiEngine(): PkiEngine {
       }
     },
 
-    async validateCrl({ certificateDer, issuerDer, crl, checkDateMs }) {
-      try {
-        const certificate = Certificate.fromBER(
-          snapshotBytes(certificateDer, "certificate")
-        );
-        const issuerCertificate = Certificate.fromBER(
-          snapshotBytes(issuerDer, "issuer certificate")
-        );
-        return await validateCrl({
-          certificate,
-          issuerCertificate,
-          crl: snapshotBinary(crl, "CRL"),
-          checkDate:
-            checkDateMs === undefined ? undefined : new Date(checkDateMs)
-        });
-      } catch {
-        return {
-          status: "unknown",
-          code: "INVALID_CRL",
-          message: "Unable to parse the supplied revocation inputs"
-        };
-      }
-    },
-
-    async validateOcsp({ certificateDer, issuerDer, response, checkDateMs }) {
-      try {
-        const certificate = Certificate.fromBER(
-          snapshotBytes(certificateDer, "certificate")
-        );
-        const issuerCertificate = Certificate.fromBER(
-          snapshotBytes(issuerDer, "issuer certificate")
-        );
-        return await validateOcsp({
-          certificate,
-          issuerCertificate,
-          response: snapshotBytes(response, "OCSP response"),
-          checkDate:
-            checkDateMs === undefined ? undefined : new Date(checkDateMs)
-        });
-      } catch {
-        return {
-          status: "unknown",
-          code: "INVALID_OCSP_RESPONSE",
-          message: "Unable to parse the supplied revocation inputs"
-        };
-      }
-    }
+    validateCrl,
+    validateOcsp
   };
 }

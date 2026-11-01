@@ -1,10 +1,10 @@
 export type { DiagnosticCallback, DiagnosticEvent } from "./diagnostics.ts";
-export { getUriSubjectAlternativeNames } from "./engine/certificate-names.ts";
 export type { CertificateInput } from "./engine/certificate-path.ts";
-export type {
-  CertificateFacts,
-  KeyUsageName,
-  ValidatedLeafCertificate
+export {
+  type CertificateFacts,
+  getUriSubjectAlternativeNames,
+  type KeyUsageName,
+  type ValidatedLeafCertificate
 } from "./engine/leaf-certificate.ts";
 export type {
   PkiEngine,

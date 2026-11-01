@@ -20,6 +20,7 @@ import {
   extractLeafCertificate,
   keyUsageNames
 } from "../src/engine/leaf-certificate.ts";
+import { getUriSubjectAlternativeNames } from "../src/index.ts";
 
 function readDer(name: string): Uint8Array<ArrayBuffer> {
   const pem = readFileSync(new URL(`./fixtures/${name}.pem`, import.meta.url));
@@ -94,6 +95,19 @@ async function syntheticCertificate({
     privateKey: keys.privateKey
   };
 }
+
+test("reads URI SANs from PEM, DER and parsed certificates through the public API", () => {
+  const pem = readFileSync(
+    new URL("./fixtures/leaf.pem", import.meta.url),
+    "utf8"
+  );
+  const der = readDer("leaf");
+  for (const input of [pem, der, Certificate.fromBER(der)]) {
+    assert.deepEqual(getUriSubjectAlternativeNames(input), [
+      "https://client.example.org/app"
+    ]);
+  }
+});
 
 test("extracts identity, validity and fingerprint metadata matching Node", () => {
   const der = readDer("leaf");

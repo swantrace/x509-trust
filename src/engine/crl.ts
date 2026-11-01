@@ -1,6 +1,6 @@
-import { BitString, fromBER } from "asn1js";
+import { BitString } from "asn1js";
 import {
-  type Certificate,
+  Certificate,
   CertificateRevocationList,
   checkCA,
   id_AuthorityKeyIdentifier,
@@ -10,6 +10,7 @@ import {
   id_IssuingDistributionPoint,
   id_KeyUsage
 } from "pkijs";
+import { parseDer } from "./der.ts";
 
 const CRL_SIGN_KEY_USAGE = 0x02;
 const SUPPORTED_CRITICAL_EXTENSIONS = new Set([
@@ -76,114 +77,121 @@ function hasUnsupportedExtensions(crl: CertificateRevocationList): boolean {
 
 // Certificate and issuer must belong to a previously validated certificate path.
 export async function validateCrl({
-  certificate,
-  issuerCertificate,
+  certificateDer,
+  issuerDer,
   crl: crlDer,
-  checkDate = new Date()
+  checkDateMs = Date.now()
 }: {
-  certificate: Certificate;
-  issuerCertificate: Certificate;
+  certificateDer: Uint8Array;
+  issuerDer: Uint8Array;
   crl: Uint8Array;
-  checkDate?: Date;
+  checkDateMs?: number;
+  signal?: AbortSignal;
 }): Promise<CrlValidationResult> {
-  if (Number.isNaN(checkDate.getTime())) {
-    throw new TypeError("checkDate must be a valid date");
-  }
-
-  const der = Uint8Array.from(crlDer);
-  let crl: CertificateRevocationList;
   try {
-    const parsed = fromBER(der);
-    if (parsed.offset < 0 || parsed.offset !== der.byteLength) {
+    const certificate = new Certificate({
+      schema: parseDer(certificateDer, "certificate").schema
+    });
+    const issuerCertificate = new Certificate({
+      schema: parseDer(issuerDer, "issuer certificate").schema
+    });
+    const checkDate = new Date(checkDateMs);
+    if (Number.isNaN(checkDate.getTime())) {
+      throw new TypeError("checkDate must be a valid date");
+    }
+
+    let crl: CertificateRevocationList;
+    try {
+      crl = new CertificateRevocationList({
+        schema: parseDer(crlDer, "CRL").schema
+      });
+    } catch {
+      return unknownCrlStatus("INVALID_CRL", "Unable to parse the DER CRL");
+    }
+
+    if (
+      !certificate.issuer.isEqual(issuerCertificate.subject) ||
+      !crl.issuer.isEqual(issuerCertificate.subject)
+    ) {
       return unknownCrlStatus(
-        "INVALID_CRL",
-        "CRL DER must contain exactly one value"
+        "CRL_ISSUER_MISMATCH",
+        "Certificate and CRL must have the supplied issuer"
       );
     }
-    crl = new CertificateRevocationList({
-      schema: parsed.result as never
-    });
-  } catch {
-    return unknownCrlStatus("INVALID_CRL", "Unable to parse the DER CRL");
-  }
+    if (!issuerCanSignCrl(issuerCertificate)) {
+      return unknownCrlStatus(
+        "CRL_ISSUER_NOT_AUTHORIZED",
+        "The issuer must be a CA permitted to sign CRLs"
+      );
+    }
+    if (hasUnsupportedExtensions(crl)) {
+      return unknownCrlStatus(
+        "UNSUPPORTED_CRL",
+        "Only direct, complete CRLs without scope restrictions are supported"
+      );
+    }
 
-  if (
-    !certificate.issuer.isEqual(issuerCertificate.subject) ||
-    !crl.issuer.isEqual(issuerCertificate.subject)
-  ) {
-    return unknownCrlStatus(
-      "CRL_ISSUER_MISMATCH",
-      "Certificate and CRL must have the supplied issuer"
-    );
-  }
-  if (!issuerCanSignCrl(issuerCertificate)) {
-    return unknownCrlStatus(
-      "CRL_ISSUER_NOT_AUTHORIZED",
-      "The issuer must be a CA permitted to sign CRLs"
-    );
-  }
-  if (hasUnsupportedExtensions(crl)) {
-    return unknownCrlStatus(
-      "UNSUPPORTED_CRL",
-      "Only direct, complete CRLs without scope restrictions are supported"
-    );
-  }
+    const thisUpdate = crl.thisUpdate.value;
+    const nextUpdate = crl.nextUpdate?.value;
+    if (!nextUpdate) {
+      return unknownCrlStatus(
+        "CRL_MISSING_NEXT_UPDATE",
+        "CRL nextUpdate is required"
+      );
+    }
+    if (
+      Number.isNaN(thisUpdate.getTime()) ||
+      Number.isNaN(nextUpdate.getTime()) ||
+      nextUpdate <= thisUpdate
+    ) {
+      return unknownCrlStatus("INVALID_CRL", "Invalid CRL validity interval");
+    }
+    if (thisUpdate > checkDate) {
+      return unknownCrlStatus(
+        "CRL_NOT_YET_VALID",
+        "CRL thisUpdate is in the future"
+      );
+    }
+    if (nextUpdate <= checkDate) {
+      return unknownCrlStatus("CRL_EXPIRED", "CRL nextUpdate has been reached");
+    }
 
-  const thisUpdate = crl.thisUpdate.value;
-  const nextUpdate = crl.nextUpdate?.value;
-  if (!nextUpdate) {
-    return unknownCrlStatus(
-      "CRL_MISSING_NEXT_UPDATE",
-      "CRL nextUpdate is required"
-    );
-  }
-  if (
-    Number.isNaN(thisUpdate.getTime()) ||
-    Number.isNaN(nextUpdate.getTime()) ||
-    nextUpdate <= thisUpdate
-  ) {
-    return unknownCrlStatus("INVALID_CRL", "Invalid CRL validity interval");
-  }
-  if (thisUpdate > checkDate) {
-    return unknownCrlStatus(
-      "CRL_NOT_YET_VALID",
-      "CRL thisUpdate is in the future"
-    );
-  }
-  if (nextUpdate <= checkDate) {
-    return unknownCrlStatus("CRL_EXPIRED", "CRL nextUpdate has been reached");
-  }
-
-  if (
-    !Buffer.from(crl.signature.toSchema().toBER(false)).equals(
-      Buffer.from(crl.signatureAlgorithm.toSchema().toBER(false))
-    )
-  ) {
-    return unknownCrlStatus(
-      "INVALID_CRL_SIGNATURE",
-      "CRL signature algorithm identifiers do not match"
-    );
-  }
-  try {
-    if (!(await crl.verify({ issuerCertificate }))) {
+    if (
+      !Buffer.from(crl.signature.toSchema().toBER(false)).equals(
+        Buffer.from(crl.signatureAlgorithm.toSchema().toBER(false))
+      )
+    ) {
       return unknownCrlStatus(
         "INVALID_CRL_SIGNATURE",
-        "CRL signature is invalid"
+        "CRL signature algorithm identifiers do not match"
       );
     }
+    try {
+      if (!(await crl.verify({ issuerCertificate }))) {
+        return unknownCrlStatus(
+          "INVALID_CRL_SIGNATURE",
+          "CRL signature is invalid"
+        );
+      }
+    } catch {
+      return unknownCrlStatus(
+        "INVALID_CRL_SIGNATURE",
+        "Unable to verify CRL signature"
+      );
+    }
+
+    const revoked = crl.isCertificateRevoked(certificate);
+
+    return {
+      status: revoked ? "revoked" : "good",
+      thisUpdate,
+      nextUpdate,
+      checkedAt: checkDate
+    };
   } catch {
     return unknownCrlStatus(
-      "INVALID_CRL_SIGNATURE",
-      "Unable to verify CRL signature"
+      "INVALID_CRL",
+      "Unable to parse the supplied revocation inputs"
     );
   }
-
-  const revoked = crl.isCertificateRevoked(certificate);
-
-  return {
-    status: revoked ? "revoked" : "good",
-    thisUpdate,
-    nextUpdate,
-    checkedAt: checkDate
-  };
 }

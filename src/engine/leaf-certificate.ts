@@ -1,16 +1,20 @@
 import { X509Certificate } from "node:crypto";
 import { BitString } from "asn1js";
 import {
+  AltName,
   BasicConstraints,
-  type Certificate,
+  Certificate,
   CertificatePolicies,
   ExtKeyUsage,
   id_BasicConstraints,
   id_CertificatePolicies,
   id_ExtKeyUsage,
-  id_KeyUsage
+  id_KeyUsage,
+  id_SubjectAltName
 } from "pkijs";
-import { uriSubjectAlternativeNames } from "./certificate-names.ts";
+import type { CertificateInput } from "./certificate-path.ts";
+
+const URI_GENERAL_NAME = 6;
 
 export type KeyUsageName =
   | "digitalSignature"
@@ -59,6 +63,34 @@ const KEY_USAGE_BITS: ReadonlyArray<[KeyUsageName, number, number]> = [
   ["encipherOnly", 0, 0x01],
   ["decipherOnly", 1, 0x80]
 ];
+
+export function getUriSubjectAlternativeNames(
+  input: CertificateInput | Certificate
+): string[] {
+  const certificate =
+    input instanceof Certificate
+      ? input
+      : Certificate.fromBER(new X509Certificate(input).raw);
+  const matches = (certificate.extensions ?? []).filter(
+    (entry) => entry.extnID === id_SubjectAltName
+  );
+  if (matches.length > 1) {
+    throw new TypeError("Duplicate subject alternative name extension");
+  }
+  const extension = matches[0];
+  if (!extension) return [];
+
+  const names = extension.parsedValue;
+  if (!(names instanceof AltName) || "parsingError" in names) {
+    throw new TypeError("Invalid subject alternative name extension");
+  }
+
+  return names.altNames
+    .filter(
+      (name) => name.type === URI_GENERAL_NAME && typeof name.value === "string"
+    )
+    .map((name) => name.value as string);
+}
 
 function singleExtension<T>(
   certificate: Certificate,
@@ -155,7 +187,7 @@ export function extractLeafCertificate(
     publicKeySpkiDer: new Uint8Array(
       certificate.subjectPublicKeyInfo.toSchema().toBER(false)
     ),
-    uriSubjectAlternativeNames: uriSubjectAlternativeNames(certificate),
+    uriSubjectAlternativeNames: getUriSubjectAlternativeNames(certificate),
     fingerprint256: facts.fingerprint256,
     serialNumber: normalizeSerialNumber(nodeCertificate.serialNumber),
     notBeforeMs: certificate.notBefore.value.getTime(),

@@ -257,3 +257,67 @@ test("validates CRL and OCSP DER snapshots and rejects trailing bytes", async ()
     "INVALID_OCSP_RESPONSE"
   );
 });
+
+test("revocation inputs retain DER size, completeness and timestamp checks", async () => {
+  const crl = readCrl("intermediate-revoked");
+  const response = readFileSync(
+    new URL("./fixtures/ocsp/good.der", import.meta.url)
+  );
+  for (const overrides of [
+    { certificateDer: new Uint8Array() },
+    { certificateDer: new Uint8Array(1024 * 1024 + 1) },
+    { certificateDer: Buffer.concat([leafDer, Buffer.from([0])]) },
+    { issuerDer: Buffer.concat([intermediateDer, Buffer.from([0])]) },
+    { checkDateMs: NaN },
+    { checkDateMs: Infinity },
+    { checkDateMs: Number.MAX_SAFE_INTEGER }
+  ]) {
+    const input = {
+      certificateDer: leafDer,
+      issuerDer: intermediateDer,
+      checkDateMs,
+      ...overrides
+    };
+    const crlResult = await engine.validateCrl({ ...input, crl });
+    const ocspResult = await engine.validateOcsp({ ...input, response });
+    assert.equal(crlResult.status, "unknown");
+    assert.equal(
+      crlResult.status === "unknown" && crlResult.code,
+      "INVALID_CRL"
+    );
+    assert.equal(ocspResult.status, "unknown");
+    assert.equal(
+      ocspResult.status === "unknown" && ocspResult.code,
+      "INVALID_OCSP_RESPONSE"
+    );
+  }
+  const oversized = new Uint8Array(1024 * 1024 + 1);
+  const input = {
+    certificateDer: leafDer,
+    issuerDer: intermediateDer,
+    checkDateMs
+  };
+  assert.equal(
+    (await engine.validateCrl({ ...input, crl: oversized })).status,
+    "unknown"
+  );
+  assert.equal(
+    (await engine.validateOcsp({ ...input, response: oversized })).status,
+    "unknown"
+  );
+});
+
+test("revocation validation snapshots caller bytes before asynchronous work", async () => {
+  const certificateDer = Uint8Array.from(leafDer);
+  const issuerDer = Uint8Array.from(intermediateDer);
+  const crl = readCrl("intermediate-revoked");
+  const response = Uint8Array.from(
+    readFileSync(new URL("./fixtures/ocsp/good.der", import.meta.url))
+  );
+  const input = { certificateDer, issuerDer, checkDateMs };
+  const crlResult = engine.validateCrl({ ...input, crl });
+  const ocspResult = engine.validateOcsp({ ...input, response });
+  for (const bytes of [certificateDer, issuerDer, crl, response]) bytes.fill(0);
+  assert.equal((await crlResult).status, "good");
+  assert.equal((await ocspResult).status, "good");
+});
