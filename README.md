@@ -5,19 +5,26 @@ Requires Node.js 24 or later.
 
 The validator builds a path to an explicitly configured trust anchor, checks
 signatures, validity periods, CA constraints, name constraints, and revocation
-evidence, then applies a local validation profile. Unknown or unusable
-revocation evidence never becomes success.
+status, then applies a local validation profile. Unknown or unusable
+revocation data never becomes success.
 
 - DER or PEM certificate input.
 - CRL and OCSP verification signed by the certificate issuer.
-- Fail-closed revocation requirements with explicit evidence choices.
+- Fail-closed revocation requirements with explicit CRL/OCSP policies.
 - Immutable validation profiles with declarative rules.
-- Concurrent per-certificate evidence collection with authenticated-revoked
+- Concurrent per-certificate revocation checks with authenticated-revoked
   early exit and `AbortSignal` cancellation.
-- Bounded evidence provider with per-origin limits and shared downloads.
-- Raw DER evidence cache.
+- Shared revocation downloads with p-queue concurrency control.
+- Raw DER response cache.
 - Optional Piscina worker engine on a separate entry point.
 - Structured `findings` for diagnostics and audit.
+
+## Documentation
+
+- [Validation capabilities and limitations](docs/capabilities.md)
+- [Local validation profiles](profiles/README.md)
+- [FHIR UDAP integration](examples/udap/README.md)
+- [Maintaining certificate and revocation fixtures](test/fixtures/README.md)
 
 ## Quick start
 
@@ -79,7 +86,7 @@ Both paths run the same validation.
 
 Public entry points:
 
-- `x509-trust` — validator, profiles, registry, evidence provider, diagnostics.
+- `x509-trust` — validator, profiles, registry, revocation provider, diagnostics.
 - `x509-trust/worker` — optional Piscina-backed PKI engine.
 
 ```typescript
@@ -89,11 +96,9 @@ interface TrustValidatorOptions {
   trustAnchors: readonly CertificateInput[];
   profile?: ValidationProfileInput;
   rules?: readonly TrustRuleRegistration[];
-  loadCrl?:
-    | ((url: string, options?: CrlLoadOptions) => Promise<Uint8Array>)
-    | false;
-  loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
-  provider?: EvidenceProvider;
+  crlLoader?: CrlRequestLoader | false;
+  ocspLoader?: OcspRequestLoader | false;
+  provider?: RevocationProvider;
   engine?: PkiEngine;
   http?: HttpOptions;
   deadlineMs?: number;
@@ -116,7 +121,7 @@ interface TrustValidator {
 
 function createTrustValidator(options: TrustValidatorOptions): TrustValidator;
 
-function getUriSubjectAlternativeNames(certificate: CertificateInput): string[];
+function getUriSubjectAlternativeNames(certificate: CertificateInput | Certificate): string[];
 
 function createMemoryCache(options?: {
   maxEntries?: number;
@@ -129,22 +134,22 @@ function createMemoryCache(options?: {
 | `trustAnchors`               | Required                       | Nonempty set of explicitly trusted certificates, copied at construction. |
 | `profile`                    | Built-in strict profile        | Local validation profile; compiled and frozen at construction.           |
 | `rules`                      | None                           | Trusted custom rule functions.                                           |
-| `loadCrl`                    | Built-in HTTP loader           | Override CRL retrieval, or `false` to disable CRL checks.              |
-| `loadOcsp`                   | Built-in HTTP loader           | Override OCSP retrieval, or `false` to disable OCSP checks.            |
+| `crlLoader`                  | Built-in HTTP loader           | Override CRL retrieval with a request-object callback, or `false` to disable CRL checks. |
+| `ocspLoader`                 | Built-in HTTP loader           | Override OCSP retrieval with a request-object callback, or `false` to disable OCSP checks. |
 | `provider`                   | Per-validator provider         | Shared provider for request limits and shared downloads.                 |
 | `engine`                     | Inline engine                  | Worker-backed engine from `x509-trust/worker`.                         |
 | `http.timeoutMs`             | `5000`                       | Deadline for each HTTP request, including reading its body.              |
 | `http.maxResponseBytes`      | `5242880` (5 MiB)            | Maximum response body size per request.                                  |
 | `http.allowedOrigins`        | No allowlist                   | Restrict retrieval to the listed origins.                                |
 | `http.allowPrivateAddresses` | `false`                      | Allow private or loopback destinations.                                  |
-| `deadlineMs`                 | `60000`                      | Overall evidence-phase deadline.                                         |
-| `cache`                      | In-memory, 256 entries         | Storage for verified CRL and OCSP evidence.                              |
-| `maxCacheAgeMs`              | `3600000` (1 hour)           | Maximum evidence cache age, also bounded by `nextUpdate`.              |
+| `deadlineMs`                 | `60000`                      | Overall revocation-phase deadline.                                         |
+| `cache`                      | In-memory, 256 entries         | Storage for verified CRL and OCSP revocation data.                              |
+| `maxCacheAgeMs`              | `3600000` (1 hour)           | Maximum revocation data cache age, also bounded by `nextUpdate`.              |
 | `cacheKeyPrefix`             | `"x509-trust:revocation:v1"` | Cache namespace.                                                         |
 | `now`                        | `Date.now`                   | Clock returning epoch milliseconds.                                      |
 | `onDiagnostic`               | None                           | Receive cache and revocation diagnostics.                                |
 | `verify().certificateChain`  | Required                       | Leaf certificate followed by intermediates.                              |
-| `verify().checkDate`         | `now()`                      | Date at which to validate the path and evidence.                         |
+| `verify().checkDate`         | `now()`                      | Date at which to validate the path and revocation data.                         |
 | `verify().signal`            | None                           | Cancels verification; rejection is an `AbortError`.                    |
 
 ### Validation profiles
@@ -222,7 +227,7 @@ Defaults:
 | `revocation.sourceOrder`       | `["ocsp", "crl"]`    | Order in which advertised mechanisms are tried.                |
 | `revocation.onUnknown`         | `"reject"`           | Unknown never becomes success.                                 |
 | `revocation.scope`             | `"non-anchor-chain"` | Every non-anchor certificate is checked.                       |
-| `revocation.requireNextUpdate` | `true`               | Evidence must have a freshness boundary.                       |
+| `revocation.requireNextUpdate` | `true`               | Revocation data must have a freshness boundary.                       |
 | `revocation.clockSkewMs`       | `0`                  | No clock-skew allowance.                                       |
 
 `sourceOrder` controls collection order. `requiredEvidence` decides which
@@ -237,7 +242,7 @@ mechanisms must produce a good result:
 Source URLs are tried in advertised order. Collection stops as soon as the
 requirement is satisfied; the library does not claim that unqueried sources agree
 with the returned result. Unknown, unavailable, unauthenticated, expired, and
-unsupported evidence never establish good status.
+unsupported revocation data never establish good status.
 
 Invalid profiles throw `ProfileError` with `INVALID_PROFILE`. Unsupported
 configuration values or rule names throw `UNSUPPORTED_PROFILE`. Disabling a
@@ -264,7 +269,7 @@ public, host-approved certificates, never private keys. See
 
 ### Profile rules
 
-Declarative checks run after the path and all required revocation evidence
+Declarative checks run after the path and all required revocation checks
 succeed:
 
 ```typescript
@@ -297,7 +302,7 @@ const rules = [
 ```
 
 A rule can reject a result but cannot turn a path, signature, time, revoked, or
-unknown evidence failure into success. Exceptions and unrecognized results are
+unknown revocation status failure into success. Exceptions and unrecognized results are
 failures. Rule facts are frozen copies derived from the validated path.
 
 ## Validation profile registry
@@ -309,8 +314,8 @@ selected by a locally registered `profileId` instead of by request input:
 import { createValidationProfileRegistry } from "x509-trust";
 
 const registry = createValidationProfileRegistry({
-  loadCrl: readCrlFromStorage,
-  loadOcsp: false,
+  crlLoader: ({ url }) => readCrlFromStorage(url),
+  ocspLoader: false,
 });
 
 registry.register({
@@ -410,7 +415,7 @@ interface ValidatedLeafCertificate {
   der: Uint8Array;
 }
 
-interface EvidenceSummary {
+interface RevocationSummary {
   certificateIndex: number;
   mechanism: "crl" | "ocsp";
   status: "good" | "revoked";
@@ -421,7 +426,7 @@ interface EvidenceSummary {
   checkedAtMs: number;
 }
 
-interface EvidenceFinding {
+interface RevocationFinding {
   certificateIndex: number;
   mechanism: "crl" | "ocsp";
   status: "good" | "revoked" | "unknown";
@@ -429,6 +434,8 @@ interface EvidenceFinding {
   fresh: boolean;
   code?: string;
   message: string;
+  source?: string;
+  durationMs?: number;
   thisUpdateMs?: number;
   nextUpdateMs?: number;
   checkedAtMs?: number;
@@ -438,8 +445,8 @@ interface CertificateFindings {
   certificateIndex: number;
   pathValid: true;
   revocation: {
-    crl: EvidenceFinding[];
-    ocsp: EvidenceFinding[];
+    crl: RevocationFinding[];
+    ocsp: RevocationFinding[];
   };
 }
 
@@ -449,7 +456,7 @@ type ValidationResult =
       certificatePath: Uint8Array[];
       trustAnchorFingerprint256: string;
       leafCertificate: ValidatedLeafCertificate;
-      evidence: EvidenceSummary[];
+      evidence: RevocationSummary[];
       findings: CertificateFindings[];
       profileId: string;
       profileVersion: ProfileVersion;
@@ -459,7 +466,7 @@ type ValidationResult =
       code: ValidationFailureCode;
       message: string;
       certificateIndex?: number;
-      evidence?: EvidenceSummary[];
+      evidence?: RevocationSummary[];
       findings?: CertificateFindings[];
       profileId?: string;
       profileVersion?: ProfileVersion;
@@ -470,16 +477,29 @@ type ValidationResult =
 | ----------------------------- | ------------------------------------------------------------------------------------- |
 | `INVALID_CERTIFICATE`       | A supplied certificate could not be parsed.                                           |
 | `INVALID_CERTIFICATE_PATH`  | No valid path to a configured anchor was found, including signature or date failures. |
-| `CERTIFICATE_REVOKED`       | Authenticated evidence reports that a path certificate is revoked.                    |
+| `CERTIFICATE_REVOKED`       | Authenticated revocation data reports that a path certificate is revoked.                    |
 | `REVOCATION_STATUS_UNKNOWN` | Revocation status could not be established.                                           |
 | `PROFILE_REJECTED`          | A profile rule rejected an otherwise valid result.                                    |
 | `UNKNOWN_PROFILE`           | A registry request named a profile that is not registered.                            |
 | `UNKNOWN_PROFILE_VERSION`   | The profile exists but the requested version is not registered.                       |
-| `RESOURCE_LIMIT_EXCEEDED`   | The request queue, queue wait, or overall deadline was exceeded.                      |
+| `RESOURCE_LIMIT_EXCEEDED`   | A revocation-check deadline or execution resource limit was exceeded.                      |
 
 Revocation failures include `certificateIndex`, the zero-based position in the
 validated path (`0` is the leaf). Use `code` for application decisions and
 `message` for diagnostic detail.
+
+`findings` preserves the CRL and OCSP attempts for each certificate, including
+the source URL, outcome, and completed attempt's `durationMs`. The duration
+includes cache access, queue waiting, downloading, and revocation data validation.
+A revocation-phase deadline also returns findings collected so far: completed
+attempts retain their results, and interrupted attempts have status `unknown`
+and code `EVIDENCE_DEADLINE_EXCEEDED`. A deadline does not establish revocation.
+Returned findings are snapshots; work that finishes later cannot change them.
+
+Attempt codes include `EVIDENCE_TIMEOUT` for a download timeout,
+`EVIDENCE_CHECK_FAILED` for an unexpected loading or validation exception, and
+the existing CRL/OCSP validation codes for unusable revocation data. These attempt
+codes supplement the top-level validation failure code.
 
 Configuration errors are thrown:
 
@@ -511,20 +531,20 @@ state. Byte fields are independent snapshots.
 - `keyUsages` is a named BIT STRING set. Optional extensions are `undefined`
   when absent; malformed or duplicate extensions are rejected.
 
-`evidence` lists the authenticated, fresh evidence that established each
+`evidence` lists the authenticated, fresh revocation data that established each
 non-anchor certificate's status. `findings` records the CRL and OCSP attempts
 that were actually made, including `unknown` attempts. An authenticated-revoked
 early result may include only the revoked certificate's findings. Findings are
 for audit, diagnostics, and tests; they are not a trust decision.
 
-## Supported PKI and evidence
+## Supported PKI and revocation data
 
 The validator builds and validates a path to a configured trust anchor, then
 checks revocation for the leaf and every intermediate. The configured anchor
 itself is not checked for revocation; applications control trust in it through
 `trustAnchors`.
 
-| Evidence                                                 | Support                           |
+| Revocation data                                                 | Support                           |
 | -------------------------------------------------------- | --------------------------------- |
 | Complete CRLs signed directly by the certificate issuer  | Supported.                        |
 | OCSP responses signed directly by the certificate issuer | Supported.                        |
@@ -533,28 +553,37 @@ itself is not checked for revocation; applications control trust in it through
 | Scoped or indirect CRLs                                  | Not supported.                    |
 | OCSP responses without `nextUpdate`                    | Not accepted; treated as unknown. |
 
-Both CRL and OCSP evidence must have a usable `nextUpdate`. This is a library
+Both CRLs and OCSP responses must have a usable `nextUpdate`. This is a library
 freshness requirement. Before using the library with a CA, confirm that its PKI
-publishes evidence within this supported scope.
+publishes revocation data within this supported scope.
 
-## Shared evidence provider
+See [validation capabilities](docs/capabilities.md) for the detailed
+certificate-path and revocation support matrix.
 
-By default each validator creates its own evidence provider with finite limits.
+## Shared revocation provider
+
+Use `createRevocationProvider`, `RevocationProvider`, `RevocationProviderOptions`,
+`RevocationProviderStats`, `RevocationSummary`, `RevocationFinding`, and
+`DEFAULT_MAX_ACTIVE_REQUESTS` (8). The former `REVOCATION_PROVIDER_DEFAULTS`
+and `EVIDENCE_PROVIDER_DEFAULTS` objects have been replaced by this number.
+The previous `Evidence*` and `createEvidenceProvider` exports remain aliases
+for compatibility. Existing
+result fields (`evidence`), profile fields (`requiredEvidence`), and
+`EVIDENCE_*` diagnostic codes also retain their names.
+
+By default each validator creates its own revocation provider with a download queue.
 Repeated `verify()` calls on the same validator share that provider. To share
 limits and pending downloads across multiple validators or profiles in the
 same process, create one provider during application setup and pass the same
 object to each validator:
 
 ```typescript
-import { createEvidenceProvider, createTrustValidator } from "x509-trust";
+import { createRevocationProvider, createTrustValidator } from "x509-trust";
 
-const provider = createEvidenceProvider({
-  loadCrl: readCrlFromStorage,
-  loadOcsp: false,
+const provider = createRevocationProvider({
+  crlLoader: ({ url }) => readCrlFromStorage(url),
+  ocspLoader: false,
   maxActiveRequests: 8,
-  maxQueuedRequests: 32,
-  maxActivePerOrigin: 4,
-  queueTimeoutMs: 30000,
 });
 
 const validatorA = createTrustValidator({
@@ -570,34 +599,53 @@ const validatorB = createTrustValidator({
 });
 ```
 
-Here `validatorA` and `validatorB` together can run at most eight downloads. With
-separate providers, each would have its own eight-download limit and could
-download the same evidence independently. The same provider can also be passed
+Here `validatorA` and `validatorB` share an eight-task concurrency limit. With
+separate providers, each would have its own queue and could
+download the same revocation data independently. The same provider can also be passed
 to `createValidationProfileRegistry({ provider })` to share it across registered
 profiles. Validation still uses each validator's own trust anchors and profile;
-the `cache` option controls evidence caching separately. Separate processes or
+the `cache` option controls revocation data caching separately. Separate processes or
 application replicas have independent provider instances and limits.
 
 | Provider option        | Default   | Meaning                                              |
 | ---------------------- | --------- | ---------------------------------------------------- |
-| `maxActiveRequests`  | `8`     | Simultaneous evidence downloads across the provider. |
-| `maxQueuedRequests`  | `32`    | Requests waiting for a slot; excess is rejected.     |
-| `maxActivePerOrigin` | `4`     | Simultaneous downloads per URL origin.               |
-| `queueTimeoutMs`     | `30000` | Maximum time waiting for a slot.                     |
+| `maxActiveRequests`  | `8`     | Concurrent tasks managed by the provider's p-queue. |
 
-Queue-full, queue-timeout, and verification-deadline conditions return
-`RESOURCE_LIMIT_EXCEEDED`.
+Scheduling uses [p-queue](https://github.com/sindresorhus/p-queue) directly for
+concurrency, waiting, and cancellation. There is no queue-length limit, per-origin
+limit, or separate queue-wait timeout. The former `maxQueuedRequests`,
+`maxActivePerOrigin`, and `queueTimeoutMs` options have been removed.
+The standalone `createRequestScheduler` API and its `RequestScheduler*` types
+have also been removed; configure `maxActiveRequests` on the provider instead.
 
-Requests waiting on a saturated origin do not block other origins when global
-capacity is available. Cancelling or timing out a queued request frees its queue
-space. A running custom loader that ignores cancellation keeps its download slot
-until its promise settles.
+The validator's `deadlineMs` bounds the revocation phase, including queue waiting;
+exceeding it returns `RESOURCE_LIMIT_EXCEEDED`. The built-in HTTP loaders retain
+their separate request timeout, so a stalled source can fail and allow another
+source to be tried. Standalone provider calls have no validator deadline; pass
+a cancellation signal when their waiting time must be bounded.
+
+Downloads are submitted as needed and start automatically when capacity is
+available. New requests can join while earlier downloads are queued or running.
+Cancelling a queued task removes it before it runs. Cancelling a running task
+rejects its queue promise and releases its queue slot, following p-queue's native
+behavior. Custom loaders must respond to the signal to stop their actual work.
+`stats()` reports p-queue's running and waiting counts; cancelled loaders that
+keep working are no longer included.
 
 The provider shares matching downloads while they are pending. CRL downloads
 are matched by URL and issuer within the same provider instance; OCSP downloads
 also require the same target certificate and request DER. Different provider
 instances do not share downloads, so separate loader, origin, or SSRF
 configurations stay isolated.
+
+The validator creates its provider and certificate checker once. For each
+non-anchor certificate, the checker tries advertised sources in profile order
+and records each attempt. It reads and revalidates cached DER first; on a miss,
+it calls the provider to share and schedule the download. It validates the
+returned DER with the configured PKI engine, then caches authenticated data.
+One policy decision function determines when the required checks are satisfied
+or a certificate is revoked. Provider instances share raw downloads; each
+validator still makes its own certificate and profile decisions.
 
 Each caller can cancel independently. A cancel removes only that caller; when
 the last caller cancels, the download is aborted. Sharing ends when a download
@@ -688,13 +736,13 @@ import { getUriSubjectAlternativeNames } from "x509-trust";
 const uris = getUriSubjectAlternativeNames(clientCertificate);
 ```
 
-It accepts PEM or DER and returns URI entries in original order without
-normalization. Other name types are excluded. A missing SAN or one with no URI
+It accepts PEM, DER, or a parsed PKI.js `Certificate` and returns URI entries in
+original order without normalization. Other name types are excluded. A missing SAN or one with no URI
 entries returns `[]`; invalid certificates or malformed SAN extensions throw.
 Extraction does not validate trust, revocation, or JWT claims. When using a
 Node.js `X509Certificate` object, pass `certificate.raw`.
 
-## Retrieving revocation evidence
+## Retrieving revocation data
 
 By default, the validator downloads CRLs with HTTP GET and sends unsigned DER
 OCSP requests with HTTP POST. CRL downloads may be DER or PEM. OCSP requests omit
@@ -723,16 +771,15 @@ verification.
 
 ### Custom loaders and disabled mechanisms
 
-Supply `loadCrl` or `loadOcsp` to retrieve evidence through another transport or
-from offline storage. Callbacks return DER bytes; OCSP callbacks receive the
-target certificate and issuer as DER bytes. The library still validates the
-returned evidence.
+Supply `crlLoader` or `ocspLoader` to retrieve revocation data through another
+transport or from offline storage. Both callbacks accept one request object and
+return DER bytes. The library still validates the returned revocation data.
 
 ```typescript
 const validator = createTrustValidator({
   trustAnchors: [rootCertificate],
-  loadCrl: async (url) => readCrlFromStorage(url),
-  loadOcsp: false,
+  crlLoader: ({ url }) => readCrlFromStorage(url),
+  ocspLoader: false,
 });
 ```
 
@@ -741,9 +788,46 @@ checks only. Setting a loader to `false` disables that mechanism for the entire
 validator, even when certificates advertise its URLs. Omitting a loader uses the
 built-in HTTP implementation.
 
+```typescript
+interface CrlRequest {
+  url: string;
+  issuerCertificate: Uint8Array;
+  signal?: AbortSignal;
+}
+
+interface OcspRequest {
+  url: string;
+  certificate: Uint8Array;
+  issuerCertificate: Uint8Array;
+  requestDer: Uint8Array;
+  signal?: AbortSignal;
+}
+
+type CrlRequestLoader = (options: CrlRequest) => Promise<Uint8Array>;
+type OcspRequestLoader = (options: OcspRequest) => Promise<Uint8Array>;
+```
+
+Certificate fields and `requestDer` contain DER bytes. The provider requires the
+CRL issuer and prepared OCSP request to identify shared downloads. Load data with
+`provider.loadCrl?.({ url, issuerCertificate, signal })` or
+`provider.loadOcsp?.({ url, certificate, issuerCertificate, requestDer, signal })`.
+Each loading method is `undefined` when its mechanism is disabled. Check for the
+method before calling it; `supportsCrl` and `supportsOcsp` have been removed.
+The PKI engine prepares OCSP request bytes during path preparation. The HTTP
+layer only downloads CRLs and sends prepared OCSP requests. The former
+`CrlLoadRequest` and `OcspLoadRequest` exports have been removed; use the
+`CrlRequest` and `OcspRequest` types above for provider calls and custom loaders.
+
+Configure callbacks using `crlLoader` and `ocspLoader`. The former `loadCrl` and
+`loadOcsp` configuration options, their legacy callback/option types, and
+positional `loadCrl(url, options)` calls have been removed. Custom providers
+implement only their supported loading methods using the request objects above,
+plus `stats()`. A shared `provider`
+cannot be combined with loader configuration.
+
 `http` settings apply only to built-in loaders. Custom loaders own their network
 restrictions, timeouts, and size limits. `checkDate` changes the validation date
-but does not retrieve historical evidence; provide suitable evidence through
+but does not retrieve historical revocation data; provide suitable revocation data through
 custom loaders when validating at a past date.
 
 ## Diagnostics
@@ -782,31 +866,34 @@ For example, a `revocation_result` event may report `status: "unknown"` and
 `code: "OCSP_MISSING_NEXT_UPDATE"`, followed by a CRL attempt. These internal
 codes explain individual attempts; `verify()` still returns the public failure
 codes. `revocation_error` reports a loading or validation exception without
-forwarding raw error text. Cache events distinguish reuse, misses, discarded
-evidence, and storage failures.
+forwarding raw error text; its `code` distinguishes `EVIDENCE_TIMEOUT`,
+`EVIDENCE_ABORTED`, `RESOURCE_LIMIT_EXCEEDED`, and `EVIDENCE_CHECK_FAILED`.
+Cache events distinguish reuse, misses, discarded
+revocation data, and storage failures.
 
 Events include mechanism and certificate index but exclude certificate contents,
-evidence bytes, cache keys, and source URLs. Callbacks run in check order;
+CRL/OCSP response bytes, cache keys, and source URLs. Callbacks run in check order;
 returned promises are not awaited. Exceptions and rejections from callbacks are
-ignored so diagnostics cannot change validation. Diagnostics describe evidence
-attempts and cache activity, not every validation outcome.
+ignored so diagnostics cannot change validation. Diagnostics describe revocation
+attempts and cache activity, not every validation outcome. Use the result's
+`findings` for the per-source attempt history.
 
 ## Caching
 
-The default evidence cache holds up to 256 entries in memory. Reusing the
-validator lets repeated requests avoid downloading the same evidence. CRLs can
+The default revocation data cache holds up to 256 entries in memory. Reusing the
+validator lets repeated requests avoid downloading the same revocation data. CRLs can
 be shared across certificates with the same issuer and CRL URL; OCSP entries
 also identify the individual certificate.
 
-Only evidence that establishes `good` or `revoked` status is cached. Expiry is
+Only revocation data that establishes `good` or `revoked` status is cached. Expiry is
 the earlier of `nextUpdate` and the time cached plus `maxCacheAgeMs` (one hour by
-default). A cache hit does not extend expiry. Evidence cached at 10:00 with
+default). A cache hit does not extend expiry. Revocation data cached at 10:00 with
 `nextUpdate` at 12:00 expires at 11:00 under the default limit, even if used
 again at 10:30.
 
-Cached evidence is revalidated for the certificate, issuer, and validation date
+Cached revocation data is revalidated for the certificate, issuer, and validation date
 on each use. Certificate paths are validated on every request. Unknown results
-are not cached. Cache failures trigger fresh retrieval; expired evidence is
+are not cached. Cache failures trigger fresh retrieval; expired revocation data is
 never used as fallback. Caching introduces a delay before newly published
 revocation information is observed, so choose `maxCacheAgeMs` according to the
 deployment's freshness requirements.

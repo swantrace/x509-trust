@@ -1,5 +1,7 @@
 # Local validation profiles
 
+[Back to README](../README.md)
+
 Validation profiles are **local, reviewed, versioned data**. They are not
 downloaded from request-supplied URIs and are not automatically trusted.
 

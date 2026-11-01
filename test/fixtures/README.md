@@ -1,5 +1,7 @@
 # Certificate and revocation fixtures
 
+[Back to README](../../README.md)
+
 Run `bash test/fixtures/generate.sh` from the repository root to regenerate all
 fixtures together. This requires OpenSSL 3.0 or later and replaces existing
 fixtures. Tests use the committed files without generating keys or starting

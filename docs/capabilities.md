@@ -1,5 +1,7 @@
 # Validation capabilities
 
+[Back to README](../README.md)
+
 This library uses PKI.js for X.509 path and revocation computation and adds a
 small set of fail-closed guards. A capability listed as *verified* has an
 in-repository test; parsing a structure is not treated as supporting its full
@@ -22,21 +24,21 @@ semantics.
 | Bounded chain/anchor counts and DER size | Verified | Prevents unbounded parsing work. |
 | Full RFC 5280 policy tree | Not claimed | PKI.js performs partial policy processing; this library only reads leaf policy OIDs for explicit policy rules. |
 
-## Revocation evidence
+## Revocation checks
 
-| Evidence | Status | Notes |
+| Revocation data | Status | Notes |
 | --- | --- | --- |
 | Complete CRL signed directly by the issuer | Verified | `nextUpdate` required; unsupported CRL extensions rejected. |
 | OCSP BasicResponse signed directly by the issuer | Verified | Responder is pinned to the validated issuer; embedded certificates grant no trust. |
 | Delegated OCSP responders | Not supported | Not claimed without independent authorization tests. |
-| Delta or indirect CRLs | Not supported | Rejected as unsupported evidence. |
+| Delta or indirect CRLs | Not supported | Rejected as unsupported revocation data. |
 | OCSP responses without `nextUpdate` | Not accepted | Treated as unknown so another source may be tried. |
-| Cached evidence | Verified | Raw DER is cached and reauthenticated for the current certificate, issuer, time and profile. |
+| Cached revocation data | Verified | Raw DER is cached and reauthenticated for the current certificate, issuer, time and profile. |
 
 ## Deliberately outside this library
 
 JWT/OAuth/FHIR business validation, issuer/SAN matching, AIA certificate
-download, TLS hostname verification for the evidence endpoints, automatic
+download, TLS hostname verification for the revocation data endpoints, automatic
 trust of system roots, and external framework profiles (for example Carequality
 or TEFCA) presets. A successful result means certificate trust and configured
-revocation evidence only.
+revocation checks only.
