@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
 import dns from "node:dns";
-import { readFileSync } from "node:fs";
 import http, { type RequestListener } from "node:http";
 import type { AddressInfo } from "node:net";
 import { type TestContext, test } from "node:test";
@@ -16,22 +15,10 @@ import {
   loadHttpOcsp,
   resolveHttpOptions
 } from "../src/revocation/http-loaders.ts";
-
-function fixture(name: string) {
-  return readFileSync(new URL(`./fixtures/${name}`, import.meta.url));
-}
-
-function crlDer(name: string) {
-  return Buffer.from(
-    fixture(`crl/${name}.crl.pem`)
-      .toString()
-      .replace(/-----[^\n]+-----/g, ""),
-    "base64"
-  );
-}
+import { fixtureTime, readCrl, readFixture } from "./helpers/fixtures.ts";
 
 function responseCertId(name: string) {
-  const outer = OCSPResponse.fromBER(fixture(`ocsp/${name}.der`));
+  const outer = OCSPResponse.fromBER(readFixture(`ocsp/${name}.der`));
   return BasicOCSPResponse.fromBER(
     Uint8Array.from(outer.responseBytes!.response.valueBlock.valueHexView)
   ).tbsResponseData.responses[0].certID;
@@ -78,7 +65,7 @@ function routeFixtureUrls(t: TestContext, origin: string): void {
   }) as typeof http.request);
 }
 
-const checkDate = new Date(fixture("validation-time.txt").toString().trim());
+const checkDate = new Date(fixtureTime);
 
 test("downloads DER and PEM CRLs from an actual local HTTP server", async (t) => {
   const methods: string[] = [];
@@ -87,15 +74,15 @@ test("downloads DER and PEM CRLs from an actual local HTTP server", async (t) =>
     response.setHeader("Content-Type", "application/pkix-crl");
     response.end(
       request.url === "/ca.crl"
-        ? crlDer("intermediate-revoked")
-        : fixture("crl/intermediate-revoked.crl.pem")
+        ? readCrl("intermediate-revoked")
+        : readFixture("crl/intermediate-revoked.crl.pem")
     );
   });
   const httpConfig = resolveHttpOptions({ allowPrivateAddresses: true });
   for (const path of ["/ca.crl", "/ca.pem"]) {
     assert.deepEqual(
       Buffer.from(await loadHttpCrl({ url: origin + path }, httpConfig)),
-      crlDer("intermediate-revoked")
+      readCrl("intermediate-revoked")
     );
   }
   assert.deepEqual(methods, ["GET", "GET"]);
@@ -117,12 +104,15 @@ test("POSTs prepared OCSP request bytes without changing them", async (t) => {
     bodies.push(body);
     received = OCSPRequest.fromBER(body);
     response.setHeader("Content-Type", "application/ocsp-response");
-    response.end(fixture("ocsp/good.der"));
+    response.end(readFixture("ocsp/good.der"));
   });
   const httpConfig = resolveHttpOptions({ allowPrivateAddresses: true });
   const path = await inlinePkiEngine.preparePath({
-    certificateChain: [fixture("leaf.pem"), fixture("intermediate.pem")],
-    trustAnchors: [new X509Certificate(fixture("root.pem")).raw],
+    certificateChain: [
+      readFixture("leaf.pem"),
+      readFixture("intermediate.pem")
+    ],
+    trustAnchors: [new X509Certificate(readFixture("root.pem")).raw],
     checkDateMs: checkDate.getTime()
   });
   assert.ok(path.pathValid);
@@ -138,7 +128,7 @@ test("POSTs prepared OCSP request bytes without changing them", async (t) => {
   );
   callerBytes.fill(0);
   const data = await pending;
-  assert.deepEqual(Buffer.from(data), fixture("ocsp/good.der"));
+  assert.deepEqual(Buffer.from(data), readFixture("ocsp/good.der"));
   assert.deepEqual(bodies, [Buffer.from(requestDer)]);
   assert.equal(method, "POST");
   assert.equal(contentType, "application/ocsp-request");
@@ -168,22 +158,25 @@ test("default public loaders verify both path certificates over HTTP and reuse c
           : "good";
     assert.ok(id.isEqual(responseCertId(name)));
     response.setHeader("Content-Type", "application/ocsp-response");
-    response.end(fixture(`ocsp/${name}.der`));
+    response.end(readFixture(`ocsp/${name}.der`));
   });
   routeFixtureUrls(t, origin);
   const validator = createTrustValidator({
-    trustAnchors: [fixture("root.pem")],
+    trustAnchors: [readFixture("root.pem")],
     now: () => checkDate.getTime(),
     http: { allowPrivateAddresses: true }
   });
   const input = {
-    certificateChain: [fixture("leaf.pem"), fixture("intermediate.pem")]
+    certificateChain: [readFixture("leaf.pem"), readFixture("intermediate.pem")]
   };
   assert.equal((await validator.verify(input)).valid, true);
   assert.equal((await validator.verify(input)).valid, true);
   assert.deepEqual(requests, ["POST /intermediate", "POST /root"]);
   const revoked = await validator.verify({
-    certificateChain: [fixture("revoked-leaf.pem"), fixture("intermediate.pem")]
+    certificateChain: [
+      readFixture("revoked-leaf.pem"),
+      readFixture("intermediate.pem")
+    ]
   });
   assert.equal(revoked.valid, false);
   assert.equal(revoked.code, "CERTIFICATE_REVOKED");
@@ -200,19 +193,22 @@ test("default public loaders fall back from unavailable OCSP to downloaded CRLs"
     } else {
       const name =
         request.url === "/root.crl" ? "root" : "intermediate-revoked";
-      response.end(fixture(`crl/${name}.crl.pem`));
+      response.end(readFixture(`crl/${name}.crl.pem`));
     }
   });
   routeFixtureUrls(t, origin);
   const validator = createTrustValidator({
-    trustAnchors: [fixture("root.pem")],
+    trustAnchors: [readFixture("root.pem")],
     now: () => checkDate.getTime(),
     http: { allowPrivateAddresses: true }
   });
   assert.equal(
     (
       await validator.verify({
-        certificateChain: [fixture("leaf.pem"), fixture("intermediate.pem")]
+        certificateChain: [
+          readFixture("leaf.pem"),
+          readFixture("intermediate.pem")
+        ]
       })
     ).valid,
     true
@@ -292,14 +288,14 @@ test("validation findings identify actual HTTP timeouts before the overall deadl
   });
   routeFixtureUrls(t, origin);
   const validator = createTrustValidator({
-    trustAnchors: [fixture("root.pem")],
+    trustAnchors: [readFixture("root.pem")],
     now: () => checkDate.getTime(),
     ocspLoader: false,
     http: { allowPrivateAddresses: true, timeoutMs: 50 },
     deadlineMs: 5000
   });
   const result = await validator.verify({
-    certificateChain: [fixture("leaf.pem"), fixture("intermediate.pem")]
+    certificateChain: [readFixture("leaf.pem"), readFixture("intermediate.pem")]
   });
   assert.equal(result.valid, false);
   assert.equal(result.code, "REVOCATION_STATUS_UNKNOWN");

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import {
   createDiagnosticReporter,
   type DiagnosticCallback,
@@ -25,6 +26,11 @@ import {
 import type { RevocationProvider } from "./revocation-provider.ts";
 
 const DEFAULT_MAX_CACHE_AGE_MS = 60 * 60 * 1000;
+const cachedRevocationSchema = z.object({
+  der: z.string(),
+  expiresAt: z.number(),
+  cachedAt: z.number()
+});
 
 interface CertificateCheckOptions {
   prepared: PreparedCertificate;
@@ -176,23 +182,17 @@ export function createRevocationChecker({
     try {
       const stored = await cache.get(key);
       if (stored === null) return null;
-      const entry: unknown = JSON.parse(stored);
-      if (
-        entry !== null &&
-        typeof entry === "object" &&
-        "der" in entry &&
-        typeof entry.der === "string" &&
-        "expiresAt" in entry &&
-        typeof entry.expiresAt === "number" &&
-        Number.isFinite(entry.expiresAt) &&
-        entry.expiresAt > now() &&
-        "cachedAt" in entry &&
-        typeof entry.cachedAt === "number" &&
-        Number.isFinite(entry.cachedAt) &&
-        entry.cachedAt <= now() &&
-        entry.cachedAt + maxCacheAgeMs > now()
-      ) {
-        return Uint8Array.from(Buffer.from(entry.der, "base64"));
+      const parsed = cachedRevocationSchema.safeParse(JSON.parse(stored));
+      if (parsed.success) {
+        const { der, expiresAt, cachedAt } = parsed.data;
+        const currentTime = now();
+        if (
+          expiresAt > currentTime &&
+          cachedAt <= currentTime &&
+          cachedAt + maxCacheAgeMs > currentTime
+        ) {
+          return Uint8Array.from(Buffer.from(der, "base64"));
+        }
       }
     } catch {
       notify({
@@ -342,7 +342,7 @@ export function createRevocationChecker({
     const reportProgress = () =>
       onProgress?.(findingsFor(certificateIndex, attempts));
     reportProgress();
-    let message =
+    let unavailableSourceMessage =
       "No usable CRL or OCSP source is configured for this certificate";
 
     for (const mechanism of profile.revocation.sourceOrder) {
@@ -351,7 +351,7 @@ export function createRevocationChecker({
       const loader = mechanism === "crl" ? provider.loadCrl : provider.loadOcsp;
       if (!loader) continue;
       if (urls.length === 0) {
-        message = `No ${mechanism.toUpperCase()} source is advertised for this certificate`;
+        unavailableSourceMessage = `No ${mechanism.toUpperCase()} source is advertised for this certificate`;
         continue;
       }
 
@@ -381,10 +381,7 @@ export function createRevocationChecker({
           });
           attempt.durationMs = Math.round(performance.now() - startedAt);
           const summary = recordResult(attempt, result);
-          if (!summary) {
-            message = attempt.message;
-            continue;
-          }
+          if (!summary) continue;
           const decision = decideRevocation(
             profile.revocation.requiredEvidence,
             attempts
@@ -406,7 +403,6 @@ export function createRevocationChecker({
             "Unable to load or validate certificate revocation data";
           if (signal?.aborted || error instanceof ResourceLimitError)
             throw error;
-          message = "Unable to load or validate certificate revocation data";
         } finally {
           reportProgress();
         }
@@ -415,17 +411,11 @@ export function createRevocationChecker({
 
     const decision = decideRevocation(
       profile.revocation.requiredEvidence,
-      attempts
+      attempts,
+      unavailableSourceMessage
     );
     const findings = findingsFor(certificateIndex, attempts);
-    if (decision.status !== "unknown") {
-      return { ...decision, findings };
-    }
-    return {
-      status: "unknown",
-      message: decision.message || message,
-      findings
-    };
+    return { ...decision, findings };
   }
 
   return checkCertificate;

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createPublicKey, sign, verify, X509Certificate } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { BitString, Integer, Utf8String } from "asn1js";
 import {
@@ -21,11 +20,7 @@ import {
   keyUsageNames
 } from "../src/engine/leaf-certificate.ts";
 import { getUriSubjectAlternativeNames } from "../src/index.ts";
-
-function readDer(name: string): Uint8Array<ArrayBuffer> {
-  const pem = readFileSync(new URL(`./fixtures/${name}.pem`, import.meta.url));
-  return Uint8Array.from(new X509Certificate(pem).raw);
-}
+import { readCertificate, readCertificateDer } from "./helpers/fixtures.ts";
 
 function extension(oid: string, value: { toSchema(): unknown }): Extension {
   return new Extension({
@@ -97,11 +92,8 @@ async function syntheticCertificate({
 }
 
 test("reads URI SANs from PEM, DER and parsed certificates through the public API", () => {
-  const pem = readFileSync(
-    new URL("./fixtures/leaf.pem", import.meta.url),
-    "utf8"
-  );
-  const der = readDer("leaf");
+  const pem = readCertificate("leaf");
+  const der = readCertificateDer("leaf");
   for (const input of [pem, der, Certificate.fromBER(der)]) {
     assert.deepEqual(getUriSubjectAlternativeNames(input), [
       "https://client.example.org/app"
@@ -110,7 +102,7 @@ test("reads URI SANs from PEM, DER and parsed certificates through the public AP
 });
 
 test("extracts identity, validity and fingerprint metadata matching Node", () => {
-  const der = readDer("leaf");
+  const der = readCertificateDer("leaf");
   const nodeCertificate = new X509Certificate(der);
   const leaf = extractLeafCertificate(Certificate.fromBER(der), der);
 
@@ -188,7 +180,7 @@ test("preserves multi-valued EKU and certificate policy OIDs", async () => {
 });
 
 test("rejects malformed or duplicate leaf extensions instead of hiding them", () => {
-  const der = readDer("leaf");
+  const der = readCertificateDer("leaf");
   const certificate = Certificate.fromBER(der);
   const san = certificate.extensions!.find(
     (entry) => entry.extnID === id_SubjectAltName
@@ -210,7 +202,7 @@ test("rejects malformed or duplicate leaf extensions instead of hiding them", ()
 });
 
 test("reads key usage as named bits rather than OIDs", () => {
-  const der = readDer("leaf");
+  const der = readCertificateDer("leaf");
   assert.deepEqual(keyUsageNames(Certificate.fromBER(der)), [
     "digitalSignature"
   ]);

@@ -73,7 +73,8 @@ export function requiredMechanisms(
 
 export function decideRevocation(
   requiredEvidence: RequiredEvidence,
-  attempts: readonly RevocationAttempt[]
+  attempts: readonly RevocationAttempt[],
+  unavailableSourceMessage = "No usable revocation evidence established certificate status"
 ): RevocationDecision {
   const revoked = attempts.find(
     (attempt) =>
@@ -123,8 +124,6 @@ export function decideRevocation(
     .find((attempt) => attempt.status === "unknown");
   return {
     status: "unknown",
-    message:
-      lastUnknown?.message ??
-      "No usable revocation evidence established certificate status"
+    message: lastUnknown?.message ?? unavailableSourceMessage
   };
 }

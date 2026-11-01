@@ -313,7 +313,8 @@ export const inlinePkiEngine: PkiEngine = {
       try {
         leafCertificate = extractLeafCertificate(
           certificates[0],
-          path.certificatePath[0]
+          path.certificatePath[0],
+          prepared[0].facts
         );
       } catch {
         return {

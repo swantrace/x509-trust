@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { X509Certificate } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { CertificateRevocationList } from "pkijs";
 import { inlinePkiEngine } from "../src/engine/pki-engine.ts";
@@ -8,32 +6,16 @@ import { compileValidationProfile } from "../src/profile/profile.ts";
 import { type CacheStore, createMemoryCache } from "../src/revocation/cache.ts";
 import { createRevocationChecker } from "../src/revocation/revocation-checker.ts";
 import { createRevocationProvider } from "../src/revocation/revocation-provider.ts";
-
-function readCertificateDer(name: string): Uint8Array {
-  const pem = readFileSync(new URL(`./fixtures/${name}.pem`, import.meta.url));
-  return Uint8Array.from(new X509Certificate(pem).raw);
-}
-
-function readCrl(name: string) {
-  const pem = readFileSync(
-    new URL(`./fixtures/crl/${name}.crl.pem`, import.meta.url),
-    "utf8"
-  );
-  return Buffer.from(pem.replace(/-----[^\n]+-----/g, ""), "base64");
-}
-
-function readOcsp(name: string) {
-  return readFileSync(new URL(`./fixtures/ocsp/${name}.der`, import.meta.url));
-}
+import {
+  fixtureTime,
+  readCertificateDer,
+  readCrl,
+  readOcsp
+} from "./helpers/fixtures.ts";
 
 const certificateDer = readCertificateDer("leaf");
 const issuerDer = readCertificateDer("intermediate");
-const fixtureTime = Date.parse(
-  readFileSync(
-    new URL("./fixtures/validation-time.txt", import.meta.url),
-    "utf8"
-  ).trim()
-);
+
 const crl = readCrl("intermediate-revoked");
 const profile = compileValidationProfile();
 const path = await inlinePkiEngine.preparePath({
@@ -442,4 +424,96 @@ test("does not fall back to expired cached data when the loader fails", async ()
   const result = await checkCertificate(crlOptions);
   assert.equal(result.status, "unknown");
   assert.equal(result.findings.revocation.crl[0].code, "EVIDENCE_CHECK_FAILED");
+});
+
+test("explains missing sources without hiding a failed query", async () => {
+  const noSources = {
+    ...crlOptions,
+    prepared: { ...prepared, crlUrls: [], ocspUrls: [] }
+  };
+  const checkMissing = createRevocationChecker({
+    profile,
+    provider: createRevocationProvider({
+      crlLoader: async () => crl,
+      ocspLoader: false
+    })
+  });
+  const missing = await checkMissing(noSources);
+  assert.equal(missing.status, "unknown");
+  assert.equal(
+    missing.status === "unknown" && missing.message,
+    "No CRL source is advertised for this certificate"
+  );
+
+  const checkDisabled = createRevocationChecker({
+    profile,
+    provider: createRevocationProvider({ crlLoader: false, ocspLoader: false })
+  });
+  const disabled = await checkDisabled(noSources);
+  assert.equal(
+    disabled.status === "unknown" && disabled.message,
+    "No usable CRL or OCSP source is configured for this certificate"
+  );
+
+  const checkFailed = createRevocationChecker({
+    profile,
+    provider: createRevocationProvider({
+      crlLoader: async () => crl,
+      ocspLoader: async () => {
+        throw new Error("offline");
+      }
+    })
+  });
+  const failed = await checkFailed(ocspOptions);
+  assert.equal(
+    failed.status === "unknown" && failed.message,
+    "Unable to load or validate certificate revocation data"
+  );
+});
+
+test("checks cached structure and freshness while tolerating extra fields", async () => {
+  const cached = {
+    der: Buffer.from(crl).toString("base64"),
+    expiresAt: fixtureTime + 10_000,
+    cachedAt: fixtureTime
+  };
+  for (const entry of [
+    null,
+    {},
+    { ...cached, der: 123 },
+    { ...cached, expiresAt: "later" },
+    { ...cached, cachedAt: null },
+    { ...cached, expiresAt: fixtureTime },
+    { ...cached, cachedAt: fixtureTime + 1 },
+    { ...cached, cachedAt: fixtureTime - 1000 },
+    { ...cached, extra: "allowed" }
+  ]) {
+    let loads = 0;
+    let discarded = false;
+    const check = createRevocationChecker({
+      profile,
+      now: () => fixtureTime,
+      maxCacheAgeMs: 1000,
+      cache: {
+        async get() {
+          return JSON.stringify(entry);
+        },
+        async set() {},
+        async delete() {
+          discarded = true;
+        }
+      },
+      provider: createRevocationProvider({
+        ocspLoader: false,
+        crlLoader: async () => {
+          loads++;
+          return crl;
+        }
+      })
+    });
+    assert.equal((await check(crlOptions)).status, "good");
+    const valid = entry !== null && "extra" in entry;
+    assert.equal(loads, valid ? 0 : 1, JSON.stringify(entry));
+    assert.equal(discarded, !valid, JSON.stringify(entry));
+  }
 });

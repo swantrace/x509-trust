@@ -2,7 +2,11 @@ import { X509Certificate } from "node:crypto";
 import type { DiagnosticCallback } from "./diagnostics.ts";
 import type { CertificateInput } from "./engine/certificate-path.ts";
 import type { ValidatedLeafCertificate } from "./engine/leaf-certificate.ts";
-import { inlinePkiEngine, type PkiEngine } from "./engine/pki-engine.ts";
+import {
+  inlinePkiEngine,
+  type PkiEngine,
+  type PreparedCertificate
+} from "./engine/pki-engine.ts";
 import { invalidProfile, ResourceLimitError } from "./errors.ts";
 import {
   compileValidationProfile,
@@ -91,10 +95,43 @@ function abortError(): DOMException {
   return new DOMException("The operation was aborted", "AbortError");
 }
 
-export function createTrustValidator({
+// Shared internally by direct construction and profile registration.
+export function prepareValidatorConfig({
   trustAnchors,
   profile: profileInput,
-  rules: ruleInput,
+  rules: ruleInput
+}: {
+  trustAnchors: readonly CertificateInput[];
+  profile?: unknown;
+  rules?: unknown;
+}) {
+  if (trustAnchors.length === 0) {
+    throw new TypeError("trustAnchors must contain at least one certificate");
+  }
+  const rules = normalizeRuleRegistrations(ruleInput);
+  const profile = compileValidationProfile(
+    profileInput ?? DEFAULT_VALIDATION_PROFILE,
+    { registeredRuleNames: rules.map((rule) => rule.name) }
+  );
+  const anchors = trustAnchors.map((input) =>
+    Uint8Array.from(new X509Certificate(input).raw)
+  );
+  return { trustAnchors: anchors, profile, rules };
+}
+
+export function createTrustValidator(
+  options: TrustValidatorOptions
+): TrustValidator {
+  return createPreparedTrustValidator({
+    ...options,
+    ...prepareValidatorConfig(options)
+  });
+}
+
+export function createPreparedTrustValidator({
+  trustAnchors,
+  profile,
+  rules,
   crlLoader: providedCrlLoader,
   ocspLoader: providedOcspLoader,
   provider,
@@ -106,22 +143,12 @@ export function createTrustValidator({
   cacheKeyPrefix,
   now = Date.now,
   onDiagnostic
-}: TrustValidatorOptions): TrustValidator {
-  if (trustAnchors.length === 0) {
-    throw new TypeError("trustAnchors must contain at least one certificate");
-  }
-  const rules = normalizeRuleRegistrations(ruleInput);
-  const profile = compileValidationProfile(
-    profileInput ?? DEFAULT_VALIDATION_PROFILE,
-    { registeredRuleNames: rules.map((rule) => rule.name) }
-  );
+}: Omit<TrustValidatorOptions, "trustAnchors" | "profile" | "rules"> &
+  ReturnType<typeof prepareValidatorConfig>): TrustValidator {
   const profileMetadata = {
     profileId: profile.id,
     profileVersion: profile.version
   };
-  const anchors = trustAnchors.map((input) =>
-    Uint8Array.from(new X509Certificate(input).raw)
-  );
   if (!Number.isSafeInteger(deadlineMs) || deadlineMs <= 0) {
     throw new TypeError("deadlineMs must be a positive integer");
   }
@@ -182,7 +209,7 @@ export function createTrustValidator({
       }
       const path = await engine.preparePath({
         certificateChain,
-        trustAnchors: anchors,
+        trustAnchors,
         checkDateMs: explicitCheckDateMs ?? now(),
         signal
       });
@@ -195,186 +222,16 @@ export function createTrustValidator({
         };
       }
 
-      if (signal?.aborted) throw abortError();
-      // The last path entry is the configured trust anchor. All non-anchor
-      // pipelines start together; within a certificate the profile order holds.
-      const controller = new AbortController();
-      const progress = new Map<number, CertificateFindings>();
-      let collecting = true;
-      let removeAbortListener = () => {};
-      const aborted = new Promise<"aborted">((resolve) => {
-        if (!signal) return;
-        const onAbort = () => {
-          controller.abort();
-          resolve("aborted");
-        };
-        signal.addEventListener("abort", onAbort, { once: true });
-        removeAbortListener = () =>
-          signal.removeEventListener("abort", onAbort);
+      const revocation = await checkPathRevocation({
+        // The last path entry is the configured trust anchor.
+        certificates: path.certificates.slice(0, -1),
+        checkRevocation,
+        checkDateMs: explicitCheckDateMs,
+        signal,
+        deadlineMs
       });
-
-      let resolveRevoked!: (value: {
-        certificateIndex: number;
-        evidence: RevocationSummary;
-        findings: CertificateFindings;
-      }) => void;
-      const revokedSignal = new Promise<{
-        certificateIndex: number;
-        evidence: RevocationSummary;
-        findings: CertificateFindings;
-      }>((resolve) => {
-        resolveRevoked = resolve;
-      });
-      let deadlineTimer: NodeJS.Timeout | undefined;
-      const deadline = new Promise<"deadline">((resolve) => {
-        deadlineTimer = setTimeout(() => {
-          controller.abort();
-          resolve("deadline");
-        }, deadlineMs);
-        deadlineTimer.unref();
-      });
-
-      type PipelineResult =
-        | {
-            index: number;
-            result: Awaited<ReturnType<typeof checkRevocation>>;
-          }
-        | { index: number; error: unknown };
-      const allCompleted = Promise.all(
-        path.certificates.slice(0, -1).map(async (prepared, index) => {
-          try {
-            const result = await checkRevocation({
-              prepared,
-              certificateIndex: index,
-              checkDateMs: explicitCheckDateMs,
-              signal: controller.signal,
-              onProgress(findings) {
-                if (collecting) progress.set(index, findings);
-              }
-            });
-            if (result.status === "revoked") {
-              resolveRevoked({
-                certificateIndex: index,
-                evidence: result.evidence,
-                findings: result.findings
-              });
-            }
-            return { index, result } satisfies PipelineResult;
-          } catch (error) {
-            return { index, error } satisfies PipelineResult;
-          }
-        })
-      );
-
-      const outcome = await Promise.race([
-        allCompleted.then((results) => ({
-          kind: "completed" as const,
-          results
-        })),
-        revokedSignal.then((value) => ({ kind: "revoked" as const, value })),
-        aborted.then(() => ({ kind: "aborted" as const })),
-        deadline.then(() => ({ kind: "deadline" as const }))
-      ]);
-      collecting = false;
-      const partialFindings = [...progress.values()].sort(
-        (a, b) => a.certificateIndex - b.certificateIndex
-      );
-      removeAbortListener();
-      if (deadlineTimer) clearTimeout(deadlineTimer);
-      if (outcome.kind === "aborted") {
-        controller.abort();
-        throw abortError();
-      }
-      if (outcome.kind === "deadline") {
-        controller.abort();
-        const interrupted = (finding: RevocationFinding) =>
-          finding.code === "EVIDENCE_PENDING" ||
-          finding.code === "EVIDENCE_ABORTED"
-            ? {
-                ...finding,
-                code: "EVIDENCE_DEADLINE_EXCEEDED",
-                message:
-                  "The evidence deadline expired before this attempt completed"
-              }
-            : finding;
-        return {
-          valid: false,
-          code: "RESOURCE_LIMIT_EXCEEDED",
-          message: "The verification deadline was exceeded",
-          findings: partialFindings.map((entry) => ({
-            ...entry,
-            revocation: {
-              crl: entry.revocation.crl.map(interrupted),
-              ocsp: entry.revocation.ocsp.map(interrupted)
-            }
-          })),
-          ...profileMetadata
-        };
-      }
-      if (outcome.kind === "revoked") {
-        controller.abort();
-        return {
-          valid: false,
-          code: "CERTIFICATE_REVOKED",
-          message: "Certificate has been revoked",
-          certificateIndex: outcome.value.certificateIndex,
-          evidence: [outcome.value.evidence],
-          findings: [outcome.value.findings],
-          ...profileMetadata
-        };
-      }
-      if (signal?.aborted) throw abortError();
-
-      const revokedEntry = outcome.results.find(
-        (entry) => !("error" in entry) && entry.result.status === "revoked"
-      );
-      if (
-        revokedEntry &&
-        !("error" in revokedEntry) &&
-        revokedEntry.result.status === "revoked"
-      ) {
-        return {
-          valid: false,
-          code: "CERTIFICATE_REVOKED",
-          message: "Certificate has been revoked",
-          certificateIndex: revokedEntry.index,
-          evidence: [revokedEntry.result.evidence],
-          findings: [revokedEntry.result.findings],
-          ...profileMetadata
-        };
-      }
-      const evidence: RevocationSummary[] = [];
-      const findings: CertificateFindings[] = [];
-      for (const entry of outcome.results) {
-        if ("error" in entry) {
-          const resourceLimited = entry.error instanceof ResourceLimitError;
-          return {
-            valid: false,
-            code: resourceLimited
-              ? "RESOURCE_LIMIT_EXCEEDED"
-              : "REVOCATION_STATUS_UNKNOWN",
-            message: resourceLimited
-              ? (entry.error as ResourceLimitError).message
-              : "Revocation validation failed",
-            certificateIndex: entry.index,
-            findings: partialFindings,
-            ...profileMetadata
-          };
-        }
-        if (entry.result.status === "unknown") {
-          return {
-            valid: false,
-            code: "REVOCATION_STATUS_UNKNOWN",
-            message: entry.result.message,
-            certificateIndex: entry.index,
-            findings: partialFindings,
-            ...profileMetadata
-          };
-        }
-        if (entry.result.status !== "good") continue;
-        evidence.push(...entry.result.evidence);
-        findings.push(entry.result.findings);
-      }
+      if (!revocation.valid) return { ...revocation, ...profileMetadata };
+      const { evidence, findings } = revocation;
 
       const ruleFailure = await applyTrustRules({
         profile,
@@ -405,4 +262,185 @@ export function createTrustValidator({
       };
     }
   };
+}
+
+type RevocationCheckResult =
+  | {
+      valid: true;
+      evidence: RevocationSummary[];
+      findings: CertificateFindings[];
+    }
+  | Extract<ValidationResult, { valid: false }>;
+
+async function checkPathRevocation({
+  certificates,
+  checkRevocation,
+  checkDateMs,
+  signal,
+  deadlineMs
+}: {
+  certificates: PreparedCertificate[];
+  checkRevocation: ReturnType<typeof createRevocationChecker>;
+  checkDateMs?: number;
+  signal?: AbortSignal;
+  deadlineMs: number;
+}): Promise<RevocationCheckResult> {
+  if (signal?.aborted) throw abortError();
+  // Start certificate checks together; each follows the profile source order.
+  const controller = new AbortController();
+  const progress = new Map<number, CertificateFindings>();
+  let collecting = true;
+  let removeAbortListener = () => {};
+  const aborted = new Promise<"aborted">((resolve) => {
+    if (!signal) return;
+    const onAbort = () => {
+      controller.abort();
+      resolve("aborted");
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+  });
+
+  type RevokedCertificate = {
+    certificateIndex: number;
+    evidence: RevocationSummary;
+    findings: CertificateFindings;
+  };
+  let resolveRevoked!: (value: RevokedCertificate) => void;
+  const revokedSignal = new Promise<RevokedCertificate>((resolve) => {
+    resolveRevoked = resolve;
+  });
+  let deadlineTimer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<"deadline">((resolve) => {
+    deadlineTimer = setTimeout(() => {
+      controller.abort();
+      resolve("deadline");
+    }, deadlineMs);
+    deadlineTimer.unref();
+  });
+
+  type PipelineResult =
+    | {
+        index: number;
+        result: Awaited<ReturnType<typeof checkRevocation>>;
+      }
+    | { index: number; error: unknown };
+  try {
+    const allCompleted = Promise.all(
+      certificates.map(async (prepared, index) => {
+        try {
+          const result = await checkRevocation({
+            prepared,
+            certificateIndex: index,
+            checkDateMs,
+            signal: controller.signal,
+            onProgress(findings) {
+              if (collecting) progress.set(index, findings);
+            }
+          });
+          if (result.status === "revoked") {
+            resolveRevoked({
+              certificateIndex: index,
+              evidence: result.evidence,
+              findings: result.findings
+            });
+          }
+          return { index, result } satisfies PipelineResult;
+        } catch (error) {
+          return { index, error } satisfies PipelineResult;
+        }
+      })
+    );
+
+    const outcome = await Promise.race([
+      allCompleted.then((results) => ({
+        kind: "completed" as const,
+        results
+      })),
+      revokedSignal.then((value) => ({ kind: "revoked" as const, value })),
+      aborted.then(() => ({ kind: "aborted" as const })),
+      deadline.then(() => ({ kind: "deadline" as const }))
+    ]);
+    collecting = false;
+    const partialFindings = [...progress.values()].sort(
+      (a, b) => a.certificateIndex - b.certificateIndex
+    );
+    if (outcome.kind === "aborted") {
+      controller.abort();
+      throw abortError();
+    }
+    if (outcome.kind === "deadline") {
+      controller.abort();
+      const interrupted = (finding: RevocationFinding) =>
+        finding.code === "EVIDENCE_PENDING" ||
+        finding.code === "EVIDENCE_ABORTED"
+          ? {
+              ...finding,
+              code: "EVIDENCE_DEADLINE_EXCEEDED",
+              message:
+                "The evidence deadline expired before this attempt completed"
+            }
+          : finding;
+      return {
+        valid: false,
+        code: "RESOURCE_LIMIT_EXCEEDED",
+        message: "The verification deadline was exceeded",
+        findings: partialFindings.map((entry) => ({
+          ...entry,
+          revocation: {
+            crl: entry.revocation.crl.map(interrupted),
+            ocsp: entry.revocation.ocsp.map(interrupted)
+          }
+        }))
+      };
+    }
+    if (outcome.kind === "revoked") {
+      controller.abort();
+      return {
+        valid: false,
+        code: "CERTIFICATE_REVOKED",
+        message: "Certificate has been revoked",
+        certificateIndex: outcome.value.certificateIndex,
+        evidence: [outcome.value.evidence],
+        findings: [outcome.value.findings]
+      };
+    }
+    if (signal?.aborted) throw abortError();
+
+    const evidence: RevocationSummary[] = [];
+    const findings: CertificateFindings[] = [];
+    for (const entry of outcome.results) {
+      if ("error" in entry) {
+        const resourceLimited = entry.error instanceof ResourceLimitError;
+        return {
+          valid: false,
+          code: resourceLimited
+            ? "RESOURCE_LIMIT_EXCEEDED"
+            : "REVOCATION_STATUS_UNKNOWN",
+          message: resourceLimited
+            ? (entry.error as ResourceLimitError).message
+            : "Revocation validation failed",
+          certificateIndex: entry.index,
+          findings: partialFindings
+        };
+      }
+      if (entry.result.status === "unknown") {
+        return {
+          valid: false,
+          code: "REVOCATION_STATUS_UNKNOWN",
+          message: entry.result.message,
+          certificateIndex: entry.index,
+          findings: partialFindings
+        };
+      }
+      if (entry.result.status !== "good") continue;
+      evidence.push(...entry.result.evidence);
+      findings.push(entry.result.findings);
+    }
+    return { valid: true, evidence, findings };
+  } finally {
+    collecting = false;
+    removeAbortListener();
+    if (deadlineTimer) clearTimeout(deadlineTimer);
+  }
 }

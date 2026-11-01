@@ -1,28 +1,14 @@
 import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { inlinePkiEngine } from "../src/engine/pki-engine.ts";
 import { createMemoryCache, createTrustValidator } from "../src/index.ts";
-
-function readCertificate(name: string): string {
-  return readFileSync(
-    new URL(`./fixtures/${name}.pem`, import.meta.url),
-    "utf8"
-  );
-}
-
-function readCrl(name: string) {
-  const pem = readFileSync(
-    new URL(`./fixtures/crl/${name}.crl.pem`, import.meta.url),
-    "utf8"
-  );
-  return Buffer.from(pem.replace(/-----[^\n]+-----/g, ""), "base64");
-}
-
-function readOcsp(name: string) {
-  return readFileSync(new URL(`./fixtures/ocsp/${name}.der`, import.meta.url));
-}
+import {
+  fixtureTime,
+  readCertificate,
+  readCrl,
+  readOcsp
+} from "./helpers/fixtures.ts";
 
 async function loadCrl(url: string): Promise<Uint8Array> {
   return url.endsWith("/root.crl")
@@ -34,12 +20,7 @@ const root = readCertificate("root");
 const intermediate = readCertificate("intermediate");
 const leaf = readCertificate("leaf");
 const revokedLeaf = readCertificate("revoked-leaf");
-const checkDate = new Date(
-  readFileSync(
-    new URL("./fixtures/validation-time.txt", import.meta.url),
-    "utf8"
-  ).trim()
-);
+const checkDate = new Date(fixtureTime);
 const now = () => checkDate.getTime();
 
 test("public API validates a full path using CRLs for leaf and intermediate", async (t) => {

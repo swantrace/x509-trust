@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   compileValidationProfile,
@@ -9,28 +8,9 @@ import {
   ProfileError,
   type ValidationProfileInput
 } from "../src/index.ts";
+import { fixtureTime, readCertificate, readCrl } from "./helpers/fixtures.ts";
 
-function readCertificate(name: string): string {
-  return readFileSync(
-    new URL(`./fixtures/${name}.pem`, import.meta.url),
-    "utf8"
-  );
-}
-
-function readCrl(name: string) {
-  const pem = readFileSync(
-    new URL(`./fixtures/crl/${name}.crl.pem`, import.meta.url),
-    "utf8"
-  );
-  return Buffer.from(pem.replace(/-----[^\n]+-----/g, ""), "base64");
-}
-
-const checkDate = new Date(
-  readFileSync(
-    new URL("./fixtures/validation-time.txt", import.meta.url),
-    "utf8"
-  ).trim()
-);
+const checkDate = new Date(fixtureTime);
 const now = () => checkDate.getTime();
 const root = readCertificate("root");
 const intermediate = readCertificate("intermediate");

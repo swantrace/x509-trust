@@ -1,4 +1,3 @@
-import { X509Certificate } from "node:crypto";
 import { z } from "zod";
 import type { DiagnosticCallback } from "../diagnostics.ts";
 import type { CertificateInput } from "../engine/certificate-path.ts";
@@ -11,19 +10,13 @@ import type {
   RevocationProvider
 } from "../revocation/revocation-provider.ts";
 import {
-  createTrustValidator,
+  createPreparedTrustValidator,
+  prepareValidatorConfig,
   type TrustValidator,
   type ValidationResult
 } from "../trust-validator.ts";
-import {
-  compileValidationProfile,
-  type ProfileVersion,
-  type ValidationProfileInput
-} from "./profile.ts";
-import {
-  normalizeRuleRegistrations,
-  type TrustRuleRegistration
-} from "./rules.ts";
+import type { ProfileVersion, ValidationProfileInput } from "./profile.ts";
+import type { TrustRuleRegistration } from "./rules.ts";
 import {
   nonEmptyString,
   parseProfileInput,
@@ -93,12 +86,16 @@ export function createValidationProfileRegistry(
         input,
         "profile registration"
       );
-      const rules = normalizeRuleRegistrations(registration.rules);
-      // Compile once for duplicate/version validation; the validator compiles
-      // its own immutable copy for the lifetime of the registered snapshot.
-      const profile = compileValidationProfile(registration.profile, {
-        registeredRuleNames: rules.map((rule) => rule.name)
-      });
+      let config: ReturnType<typeof prepareValidatorConfig>;
+      try {
+        config = prepareValidatorConfig(registration);
+      } catch (error) {
+        if (error instanceof TypeError) {
+          throw invalidProfile("trustAnchors contains an invalid certificate");
+        }
+        throw error;
+      }
+      const { profile } = config;
       const profileId = profile.id;
       const versionKey = String(profile.version);
       let versions = profiles.get(profileId);
@@ -114,20 +111,7 @@ export function createValidationProfileRegistry(
           );
         }
       }
-      let trustAnchors: Uint8Array[];
-      try {
-        trustAnchors = registration.trustAnchors.map((anchor) =>
-          Uint8Array.from(new X509Certificate(anchor).raw)
-        );
-      } catch {
-        throw invalidProfile("trustAnchors contains an invalid certificate");
-      }
-      const validator = createTrustValidator({
-        ...options,
-        trustAnchors,
-        profile,
-        rules
-      });
+      const validator = createPreparedTrustValidator({ ...options, ...config });
       if (!versions) {
         versions = new Map();
         profiles.set(profileId, versions);

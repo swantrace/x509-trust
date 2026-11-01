@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { BitString, OctetString } from "asn1js";
 import {
@@ -11,46 +10,26 @@ import {
   id_KeyUsage
 } from "pkijs";
 import { inlinePkiEngine } from "../src/engine/pki-engine.ts";
-
-function readPem(name: string): string {
-  return readFileSync(
-    new URL(`./fixtures/${name}.pem`, import.meta.url),
-    "utf8"
-  );
-}
-
-function readDer(name: string): Uint8Array<ArrayBuffer> {
-  return Uint8Array.from(new X509Certificate(readPem(name)).raw);
-}
-
-function readCrl(name: string): Uint8Array<ArrayBuffer> {
-  const pem = readFileSync(
-    new URL(`./fixtures/crl/${name}.crl.pem`, import.meta.url),
-    "utf8"
-  );
-  return Uint8Array.from(
-    Buffer.from(pem.replace(/-----[^\n]+-----/g, ""), "base64")
-  );
-}
+import {
+  fixtureTime,
+  readCertificateDer,
+  readCrl,
+  readOcsp
+} from "./helpers/fixtures.ts";
 
 function mutate(
   name: string,
   change: (certificate: Certificate) => void
 ): Uint8Array {
-  const certificate = Certificate.fromBER(readDer(name));
+  const certificate = Certificate.fromBER(readCertificateDer(name));
   change(certificate);
   return new Uint8Array(certificate.toSchema(true).toBER(false));
 }
 
-const rootDer = readDer("root");
-const intermediateDer = readDer("intermediate");
-const leafDer = readDer("leaf");
-const checkDateMs = Date.parse(
-  readFileSync(
-    new URL("./fixtures/validation-time.txt", import.meta.url),
-    "utf8"
-  ).trim()
-);
+const rootDer = readCertificateDer("root");
+const intermediateDer = readCertificateDer("intermediate");
+const leafDer = readCertificateDer("leaf");
+const checkDateMs = fixtureTime;
 const engine = inlinePkiEngine;
 
 async function prepare(
@@ -83,6 +62,12 @@ test("prepares a validated path with DER snapshots and revocation targets", asyn
   assert.deepEqual(result.leafCertificate.uriSubjectAlternativeNames, [
     "https://client.example.org/app"
   ]);
+  const facts = result.certificates[0].facts;
+  assert.equal(result.leafCertificate.fingerprint256, facts.fingerprint256);
+  assert.deepEqual(result.leafCertificate.keyUsages, facts.keyUsages);
+  assert.notEqual(result.leafCertificate.keyUsages, facts.keyUsages);
+  result.leafCertificate.keyUsages?.push("keyCertSign");
+  assert.deepEqual(facts.keyUsages, ["digitalSignature"]);
   const snapshot = result.certificatePath[0];
   const callerBytes = Uint8Array.from(leafDer);
   callerBytes.fill(0);
@@ -112,7 +97,7 @@ test("rejects trailing DER bytes and oversized chain inputs", async () => {
 });
 
 test("rejects a path whose issuer is a different CA", async () => {
-  const result = await prepare([leafDer, readDer("untrusted-root")]);
+  const result = await prepare([leafDer, readCertificateDer("untrusted-root")]);
   assert.equal(result.pathValid, false);
   assert.equal(result.code, "INVALID_CERTIFICATE_PATH");
 });
@@ -231,9 +216,7 @@ test("validates CRL and OCSP DER snapshots and rejects trailing bytes", async ()
     "INVALID_CRL"
   );
 
-  const response = readFileSync(
-    new URL("./fixtures/ocsp/good.der", import.meta.url)
-  );
+  const response = readOcsp("good");
   assert.equal(
     (
       await engine.validateOcsp({
@@ -260,9 +243,7 @@ test("validates CRL and OCSP DER snapshots and rejects trailing bytes", async ()
 
 test("revocation inputs retain DER size, completeness and timestamp checks", async () => {
   const crl = readCrl("intermediate-revoked");
-  const response = readFileSync(
-    new URL("./fixtures/ocsp/good.der", import.meta.url)
-  );
+  const response = readOcsp("good");
   for (const overrides of [
     { certificateDer: new Uint8Array() },
     { certificateDer: new Uint8Array(1024 * 1024 + 1) },
@@ -311,9 +292,7 @@ test("revocation validation snapshots caller bytes before asynchronous work", as
   const certificateDer = Uint8Array.from(leafDer);
   const issuerDer = Uint8Array.from(intermediateDer);
   const crl = readCrl("intermediate-revoked");
-  const response = Uint8Array.from(
-    readFileSync(new URL("./fixtures/ocsp/good.der", import.meta.url))
-  );
+  const response = Uint8Array.from(readOcsp("good"));
   const input = { certificateDer, issuerDer, checkDateMs };
   const crlResult = engine.validateCrl({ ...input, crl });
   const ocspResult = engine.validateOcsp({ ...input, response });

@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { X509Certificate } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   AccessDescription,
@@ -17,6 +15,7 @@ import {
   RelativeDistinguishedNames
 } from "pkijs";
 import { getRevocationEndpoints } from "../src/engine/revocation-endpoints.ts";
+import { readCertificateDer } from "./helpers/fixtures.ts";
 
 for (const [name, issuer] of [
   ["leaf", "intermediate"],
@@ -24,10 +23,7 @@ for (const [name, issuer] of [
   ["intermediate", "root"]
 ]) {
   test(`extracts the issuing CA's CRL and OCSP addresses from ${name}.pem`, () => {
-    const pem = readFileSync(
-      new URL(`./fixtures/${name}.pem`, import.meta.url)
-    );
-    const certificate = Certificate.fromBER(new X509Certificate(pem).raw);
+    const certificate = Certificate.fromBER(readCertificateDer(name));
 
     assert.deepEqual(getRevocationEndpoints(certificate), {
       crlUrls: [`http://crl.example.test/${issuer}.crl`],
@@ -37,8 +33,7 @@ for (const [name, issuer] of [
 }
 
 test("returns empty arrays when a root has no revocation extensions", () => {
-  const pem = readFileSync(new URL("./fixtures/root.pem", import.meta.url));
-  const certificate = Certificate.fromBER(new X509Certificate(pem).raw);
+  const certificate = Certificate.fromBER(readCertificateDer("root"));
 
   assert.deepEqual(getRevocationEndpoints(certificate), {
     crlUrls: [],

@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { X509Certificate } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { BitString, OctetString } from "asn1js";
 import {
@@ -13,25 +11,15 @@ import {
   id_KeyUsage
 } from "pkijs";
 import { validateCrl } from "../src/engine/crl.ts";
+import {
+  fixtureTime,
+  readCertificateDer,
+  readCrl
+} from "./helpers/fixtures.ts";
 
-function readFixture(name: string): string {
-  return readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
-}
-
-function readDer(name: string): Uint8Array<ArrayBuffer> {
-  return Uint8Array.from(new X509Certificate(readFixture(`${name}.pem`)).raw);
-}
-
-function readCrl(name: string) {
-  return Buffer.from(
-    readFixture(`crl/${name}.crl.pem`).replace(/-----[^\n]+-----/g, ""),
-    "base64"
-  );
-}
-
-const certificateDer = readDer("leaf");
-const issuerDer = readDer("intermediate");
-const checkDateMs = Date.parse(readFixture("validation-time.txt").trim());
+const certificateDer = readCertificateDer("leaf");
+const issuerDer = readCertificateDer("intermediate");
+const checkDateMs = fixtureTime;
 const crl = readCrl("intermediate-revoked");
 
 test("reports good when a valid CRL revokes a different certificate", async () => {
@@ -48,7 +36,7 @@ test("reports good when a valid CRL revokes a different certificate", async () =
 
 test("reports revoked for the certificate listed in a valid signed CRL", async () => {
   const result = await validateCrl({
-    certificateDer: readDer("revoked-leaf"),
+    certificateDer: readCertificateDer("revoked-leaf"),
     issuerDer,
     crl,
     checkDateMs
@@ -58,7 +46,7 @@ test("reports revoked for the certificate listed in a valid signed CRL", async (
 
 test("uses the earlier clean CRL as its own snapshot of revocation status", async () => {
   const result = await validateCrl({
-    certificateDer: readDer("revoked-leaf"),
+    certificateDer: readCertificateDer("revoked-leaf"),
     issuerDer,
     crl: readCrl("intermediate-clean"),
     checkDateMs
@@ -69,7 +57,7 @@ test("uses the earlier clean CRL as its own snapshot of revocation status", asyn
 test("checks intermediate certificate status using its root issuer's CRL", async () => {
   const result = await validateCrl({
     certificateDer: issuerDer,
-    issuerDer: readDer("root"),
+    issuerDer: readCertificateDer("root"),
     crl: readCrl("root"),
     checkDateMs
   });
@@ -116,7 +104,7 @@ test("rejects a CRL issued by a different CA", async () => {
 });
 
 test("rejects an issuer whose key usage does not permit CRL signing", async () => {
-  const issuer = Certificate.fromBER(readDer("intermediate"));
+  const issuer = Certificate.fromBER(readCertificateDer("intermediate"));
   const keyUsage = issuer.extensions!.find(
     (extension) => extension.extnID === id_KeyUsage
   )!;

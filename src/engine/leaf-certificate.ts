@@ -179,10 +179,10 @@ export function extractCertificateFacts(
 
 export function extractLeafCertificate(
   certificate: Certificate,
-  der: Uint8Array
+  der: Uint8Array,
+  facts = extractCertificateFacts(certificate, der)
 ): ValidatedLeafCertificate {
   const nodeCertificate = new X509Certificate(der);
-  const facts = extractCertificateFacts(certificate, der);
   return {
     publicKeySpkiDer: new Uint8Array(
       certificate.subjectPublicKeyInfo.toSchema().toBER(false)
@@ -194,9 +194,9 @@ export function extractLeafCertificate(
     notAfterMs: certificate.notAfter.value.getTime(),
     subject: facts.subject,
     issuer: facts.issuer,
-    keyUsages: facts.keyUsages,
-    extendedKeyUsageOids: facts.extendedKeyUsageOids,
-    certificatePolicyOids: facts.certificatePolicyOids,
+    keyUsages: facts.keyUsages?.slice(),
+    extendedKeyUsageOids: facts.extendedKeyUsageOids?.slice(),
+    certificatePolicyOids: facts.certificatePolicyOids?.slice(),
     der: Uint8Array.from(der)
   };
 }
