@@ -1,20 +1,13 @@
 import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { validateCertificatePath } from "../src/engine/certificate-path.ts";
+import { readCertificate } from "./helpers/fixtures.ts";
 
-function readFixture(name: string): string {
-  return readFileSync(
-    new URL(`./fixtures/${name}.pem`, import.meta.url),
-    "utf8"
-  );
-}
-
-const root = readFixture("root");
-const intermediate = readFixture("intermediate");
-const leaf = readFixture("leaf");
-const untrustedRoot = readFixture("untrusted-root");
+const root = readCertificate("root");
+const intermediate = readCertificate("intermediate");
+const leaf = readCertificate("leaf");
+const untrustedRoot = readCertificate("untrusted-root");
 const leafCertificate = new X509Certificate(leaf);
 const checkDate = new Date(Date.parse(leafCertificate.validFrom) + 1000);
 

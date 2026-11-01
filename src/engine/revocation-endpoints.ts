@@ -1,3 +1,4 @@
+// Extracts CRL and OCSP URLs from certificate extensions.
 import {
   type Certificate,
   CRLDistributionPoints,

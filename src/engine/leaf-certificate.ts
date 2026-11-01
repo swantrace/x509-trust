@@ -1,28 +1,25 @@
+// Extracts certificate identity, URI subject alternative names, and leaf public-key metadata.
 import { X509Certificate } from "node:crypto";
-import { BitString } from "asn1js";
 import {
+  AltName,
   BasicConstraints,
-  type Certificate,
-  CertificatePolicies,
-  ExtKeyUsage,
+  Certificate,
   id_BasicConstraints,
-  id_CertificatePolicies,
-  id_ExtKeyUsage,
-  id_KeyUsage
+  id_SubjectAltName
 } from "pkijs";
-import { uriSubjectAlternativeNames } from "./certificate-names.ts";
+import {
+  certificatePolicyOids,
+  extendedKeyUsageOids,
+  type KeyUsageName,
+  keyUsageNames,
+  singleExtension
+} from "./certificate-extensions.ts";
+import type { CertificateInput } from "./certificate-path.ts";
 
-export type KeyUsageName =
-  | "digitalSignature"
-  | "nonRepudiation"
-  | "keyEncipherment"
-  | "dataEncipherment"
-  | "keyAgreement"
-  | "keyCertSign"
-  | "cRLSign"
-  | "encipherOnly"
-  | "decipherOnly";
+export type { KeyUsageName } from "./certificate-extensions.ts";
+export { keyUsageNames } from "./certificate-extensions.ts";
 
+const URI_GENERAL_NAME = 6;
 export interface CertificateFacts {
   fingerprint256: string;
   subject: string;
@@ -48,69 +45,32 @@ export interface ValidatedLeafCertificate {
   der: Uint8Array;
 }
 
-const KEY_USAGE_BITS: ReadonlyArray<[KeyUsageName, number, number]> = [
-  ["digitalSignature", 0, 0x80],
-  ["nonRepudiation", 0, 0x40],
-  ["keyEncipherment", 0, 0x20],
-  ["dataEncipherment", 0, 0x10],
-  ["keyAgreement", 0, 0x08],
-  ["keyCertSign", 0, 0x04],
-  ["cRLSign", 0, 0x02],
-  ["encipherOnly", 0, 0x01],
-  ["decipherOnly", 1, 0x80]
-];
-
-function singleExtension<T>(
-  certificate: Certificate,
-  oid: string
-): T | undefined {
+export function getUriSubjectAlternativeNames(
+  input: CertificateInput | Certificate
+): string[] {
+  const certificate =
+    input instanceof Certificate
+      ? input
+      : Certificate.fromBER(new X509Certificate(input).raw);
   const matches = (certificate.extensions ?? []).filter(
-    (extension) => extension.extnID === oid
+    (entry) => entry.extnID === id_SubjectAltName
   );
   if (matches.length > 1) {
-    throw new TypeError(`Duplicate certificate extension: ${oid}`);
+    throw new TypeError("Duplicate subject alternative name extension");
   }
-  const value = matches[0]?.parsedValue;
-  return value === undefined ? undefined : (value as T);
-}
+  const extension = matches[0];
+  if (!extension) return [];
 
-export function keyUsageNames(
-  certificate: Certificate
-): KeyUsageName[] | undefined {
-  const usage = singleExtension<BitString>(certificate, id_KeyUsage);
-  if (usage === undefined) return undefined;
-  if (!(usage instanceof BitString)) {
-    throw new TypeError("Invalid key usage extension");
+  const names = extension.parsedValue;
+  if (!(names instanceof AltName) || "parsingError" in names) {
+    throw new TypeError("Invalid subject alternative name extension");
   }
-  const bytes = usage.valueBlock.valueHexView;
-  return KEY_USAGE_BITS.filter(
-    ([, byte, mask]) => byte < bytes.byteLength && (bytes[byte] & mask) !== 0
-  ).map(([name]) => name);
-}
 
-export function extendedKeyUsageOids(
-  certificate: Certificate
-): string[] | undefined {
-  const usage = singleExtension<ExtKeyUsage>(certificate, id_ExtKeyUsage);
-  if (usage === undefined) return undefined;
-  if (!(usage instanceof ExtKeyUsage)) {
-    throw new TypeError("Invalid extended key usage extension");
-  }
-  return Array.from(usage.keyPurposes);
-}
-
-export function certificatePolicyOids(
-  certificate: Certificate
-): string[] | undefined {
-  const policies = singleExtension<CertificatePolicies>(
-    certificate,
-    id_CertificatePolicies
-  );
-  if (policies === undefined) return undefined;
-  if (!(policies instanceof CertificatePolicies)) {
-    throw new TypeError("Invalid certificate policies extension");
-  }
-  return policies.certificatePolicies.map((policy) => policy.policyIdentifier);
+  return names.altNames
+    .filter(
+      (name) => name.type === URI_GENERAL_NAME && typeof name.value === "string"
+    )
+    .map((name) => name.value as string);
 }
 
 function normalizeSerialNumber(serialNumber: string): string {
@@ -147,24 +107,24 @@ export function extractCertificateFacts(
 
 export function extractLeafCertificate(
   certificate: Certificate,
-  der: Uint8Array
+  der: Uint8Array,
+  facts = extractCertificateFacts(certificate, der)
 ): ValidatedLeafCertificate {
   const nodeCertificate = new X509Certificate(der);
-  const facts = extractCertificateFacts(certificate, der);
   return {
     publicKeySpkiDer: new Uint8Array(
       certificate.subjectPublicKeyInfo.toSchema().toBER(false)
     ),
-    uriSubjectAlternativeNames: uriSubjectAlternativeNames(certificate),
+    uriSubjectAlternativeNames: getUriSubjectAlternativeNames(certificate),
     fingerprint256: facts.fingerprint256,
     serialNumber: normalizeSerialNumber(nodeCertificate.serialNumber),
     notBeforeMs: certificate.notBefore.value.getTime(),
     notAfterMs: certificate.notAfter.value.getTime(),
     subject: facts.subject,
     issuer: facts.issuer,
-    keyUsages: facts.keyUsages,
-    extendedKeyUsageOids: facts.extendedKeyUsageOids,
-    certificatePolicyOids: facts.certificatePolicyOids,
+    keyUsages: facts.keyUsages?.slice(),
+    extendedKeyUsageOids: facts.extendedKeyUsageOids?.slice(),
+    certificatePolicyOids: facts.certificatePolicyOids?.slice(),
     der: Uint8Array.from(der)
   };
 }

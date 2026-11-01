@@ -1,0 +1,85 @@
+// Reads certificate key usages, extended key usages, and policy identifiers.
+import { BitString } from "asn1js";
+import {
+  type Certificate,
+  CertificatePolicies,
+  ExtKeyUsage,
+  id_CertificatePolicies,
+  id_ExtKeyUsage,
+  id_KeyUsage
+} from "pkijs";
+export type KeyUsageName =
+  | "digitalSignature"
+  | "nonRepudiation"
+  | "keyEncipherment"
+  | "dataEncipherment"
+  | "keyAgreement"
+  | "keyCertSign"
+  | "cRLSign"
+  | "encipherOnly"
+  | "decipherOnly";
+
+const KEY_USAGE_BITS: ReadonlyArray<[KeyUsageName, number, number]> = [
+  ["digitalSignature", 0, 0x80],
+  ["nonRepudiation", 0, 0x40],
+  ["keyEncipherment", 0, 0x20],
+  ["dataEncipherment", 0, 0x10],
+  ["keyAgreement", 0, 0x08],
+  ["keyCertSign", 0, 0x04],
+  ["cRLSign", 0, 0x02],
+  ["encipherOnly", 0, 0x01],
+  ["decipherOnly", 1, 0x80]
+];
+
+export function singleExtension<T>(
+  certificate: Certificate,
+  oid: string
+): T | undefined {
+  const matches = (certificate.extensions ?? []).filter(
+    (extension) => extension.extnID === oid
+  );
+  if (matches.length > 1) {
+    throw new TypeError(`Duplicate certificate extension: ${oid}`);
+  }
+  const value = matches[0]?.parsedValue;
+  return value === undefined ? undefined : (value as T);
+}
+
+export function keyUsageNames(
+  certificate: Certificate
+): KeyUsageName[] | undefined {
+  const usage = singleExtension<BitString>(certificate, id_KeyUsage);
+  if (usage === undefined) return undefined;
+  if (!(usage instanceof BitString)) {
+    throw new TypeError("Invalid key usage extension");
+  }
+  const bytes = usage.valueBlock.valueHexView;
+  return KEY_USAGE_BITS.filter(
+    ([, byte, mask]) => byte < bytes.byteLength && (bytes[byte] & mask) !== 0
+  ).map(([name]) => name);
+}
+
+export function extendedKeyUsageOids(
+  certificate: Certificate
+): string[] | undefined {
+  const usage = singleExtension<ExtKeyUsage>(certificate, id_ExtKeyUsage);
+  if (usage === undefined) return undefined;
+  if (!(usage instanceof ExtKeyUsage)) {
+    throw new TypeError("Invalid extended key usage extension");
+  }
+  return Array.from(usage.keyPurposes);
+}
+
+export function certificatePolicyOids(
+  certificate: Certificate
+): string[] | undefined {
+  const policies = singleExtension<CertificatePolicies>(
+    certificate,
+    id_CertificatePolicies
+  );
+  if (policies === undefined) return undefined;
+  if (!(policies instanceof CertificatePolicies)) {
+    throw new TypeError("Invalid certificate policies extension");
+  }
+  return policies.certificatePolicies.map((policy) => policy.policyIdentifier);
+}

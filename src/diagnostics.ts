@@ -1,3 +1,4 @@
+// Defines revocation diagnostic events and isolates validation from callback failures.
 export interface DiagnosticEvent {
   event:
     | "cache_hit"
@@ -17,7 +18,14 @@ export type DiagnosticCallback = (
   event: DiagnosticEvent
 ) => void | Promise<void>;
 
-export function createDiagnosticReporter(onDiagnostic?: DiagnosticCallback) {
+export type DiagnosticReporter = (event: DiagnosticEvent) => void;
+export type SourceDiagnosticReporter = (
+  event: Pick<DiagnosticEvent, "event" | "message" | "code" | "status">
+) => void;
+
+export function createDiagnosticReporter(
+  onDiagnostic?: DiagnosticCallback
+): DiagnosticReporter {
   return (event: DiagnosticEvent): void => {
     if (!onDiagnostic) return;
     try {

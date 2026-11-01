@@ -1,10 +1,11 @@
+// Exports the public certificate validation, revocation, and profile APIs.
 export type { DiagnosticCallback, DiagnosticEvent } from "./diagnostics.ts";
-export { getUriSubjectAlternativeNames } from "./engine/certificate-names.ts";
 export type { CertificateInput } from "./engine/certificate-path.ts";
-export type {
-  CertificateFacts,
-  KeyUsageName,
-  ValidatedLeafCertificate
+export {
+  type CertificateFacts,
+  getUriSubjectAlternativeNames,
+  type KeyUsageName,
+  type ValidatedLeafCertificate
 } from "./engine/leaf-certificate.ts";
 export type {
   PkiEngine,
@@ -16,31 +17,6 @@ export {
   type ProfileErrorCode,
   ResourceLimitError
 } from "./errors.ts";
-export { type CacheStore, createMemoryCache } from "./evidence/cache.ts";
-export type {
-  CertificateFindings,
-  EvidenceFinding,
-  EvidenceSummary
-} from "./evidence/evidence.ts";
-export {
-  type CrlLoader,
-  createEvidenceProvider,
-  EVIDENCE_PROVIDER_DEFAULTS,
-  type EvidenceProvider,
-  type EvidenceProviderOptions,
-  type OcspLoader
-} from "./evidence/evidence-provider.ts";
-export type {
-  CrlLoadOptions,
-  HttpOptions,
-  OcspLoadOptions
-} from "./evidence/http-loaders.ts";
-export {
-  createRequestScheduler,
-  type RequestScheduler,
-  type RequestSchedulerOptions,
-  type RequestSchedulerStats
-} from "./evidence/request-scheduler.ts";
 export {
   type CompiledValidationProfile,
   compileValidationProfile,
@@ -66,6 +42,30 @@ export {
   type TrustRuleRegistration,
   type TrustRuleResult
 } from "./profile/rules.ts";
+export { type CacheStore, createMemoryCache } from "./revocation/cache.ts";
+export type { HttpOptions } from "./revocation/http-loaders.ts";
+export type {
+  CertificateFindings,
+  RevocationFinding,
+  RevocationFinding as EvidenceFinding,
+  RevocationSummary as EvidenceSummary,
+  RevocationSummary
+} from "./revocation/revocation.ts";
+export {
+  type CrlRequest,
+  type CrlRequestLoader,
+  createRevocationProvider,
+  createRevocationProvider as createEvidenceProvider,
+  DEFAULT_MAX_ACTIVE_REQUESTS,
+  type OcspRequest,
+  type OcspRequestLoader,
+  type RevocationLoaderOptions,
+  type RevocationProvider,
+  type RevocationProvider as EvidenceProvider,
+  type RevocationProviderOptions,
+  type RevocationProviderOptions as EvidenceProviderOptions,
+  type RevocationProviderStats
+} from "./revocation/revocation-provider.ts";
 export {
   createTrustValidator,
   type TrustValidator,
@@ -73,4 +73,4 @@ export {
   type ValidationFailureCode,
   type ValidationResult,
   type VerifyOptions
-} from "./validator/trust-validator.ts";
+} from "./trust-validator.ts";

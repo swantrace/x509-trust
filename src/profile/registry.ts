@@ -1,29 +1,31 @@
-import { X509Certificate } from "node:crypto";
+// Registers immutable profile versions and selects the validator for each verification request.
+import { z } from "zod";
 import type { DiagnosticCallback } from "../diagnostics.ts";
 import type { CertificateInput } from "../engine/certificate-path.ts";
 import type { PkiEngine } from "../engine/pki-engine.ts";
 import { invalidProfile } from "../errors.ts";
-import type { CacheStore } from "../evidence/cache.ts";
-import type { EvidenceProvider } from "../evidence/evidence-provider.ts";
+import type { CacheStore } from "../revocation/cache.ts";
+import type { HttpOptions } from "../revocation/http-loaders.ts";
 import type {
-  CrlLoadOptions,
-  HttpOptions,
-  OcspLoadOptions
-} from "../evidence/http-loaders.ts";
+  RevocationLoaderOptions,
+  RevocationProvider
+} from "../revocation/revocation-provider.ts";
 import {
-  createTrustValidator,
+  createPreparedTrustValidator,
   type TrustValidator,
   type ValidationResult
-} from "../validator/trust-validator.ts";
+} from "../trust-validator.ts";
+import type { ProfileVersion, ValidationProfileInput } from "./profile.ts";
+import type { TrustRuleRegistration } from "./rules.ts";
 import {
-  compileValidationProfile,
-  type ProfileVersion,
-  type ValidationProfileInput
-} from "./profile.ts";
+  nonEmptyString,
+  parseProfileInput,
+  profileVersionSchema
+} from "./validation.ts";
 import {
-  normalizeRuleRegistrations,
-  type TrustRuleRegistration
-} from "./rules.ts";
+  type PreparedValidatorConfig,
+  prepareValidatorConfig
+} from "./validator-config.ts";
 
 export interface ValidationProfileRegistration {
   profile: ValidationProfileInput;
@@ -31,12 +33,9 @@ export interface ValidationProfileRegistration {
   rules?: readonly TrustRuleRegistration[];
 }
 
-export interface ValidationProfileRegistryOptions {
-  loadCrl?:
-    | ((url: string, options?: CrlLoadOptions) => Promise<Uint8Array>)
-    | false;
-  loadOcsp?: ((options: OcspLoadOptions) => Promise<Uint8Array>) | false;
-  provider?: EvidenceProvider;
+export interface ValidationProfileRegistryOptions
+  extends RevocationLoaderOptions {
+  provider?: RevocationProvider;
   engine?: PkiEngine;
   http?: HttpOptions;
   deadlineMs?: number;
@@ -47,12 +46,26 @@ export interface ValidationProfileRegistryOptions {
   onDiagnostic?: DiagnosticCallback;
 }
 
-export interface ValidationProfileRegistryVerifyOptions {
-  profileId: string;
-  profileVersion?: ProfileVersion;
-  certificateChain: readonly CertificateInput[];
-  checkDate?: Date;
-}
+const certificateInputSchema = z.union([z.string(), z.instanceof(Uint8Array)]);
+const registrationSchema = z.strictObject({
+  profile: z.record(z.string(), z.unknown()),
+  trustAnchors: z.array(certificateInputSchema).min(1),
+  rules: z.unknown().optional()
+});
+const verifyOptionsSchema = z.strictObject({
+  profileId: nonEmptyString,
+  profileVersion: profileVersionSchema.optional(),
+  // The engine checks chain length before inspecting certificate inputs.
+  certificateChain: z.custom<readonly CertificateInput[]>(
+    Array.isArray,
+    "must be an array"
+  ),
+  checkDate: z.instanceof(Date).optional()
+});
+
+export type ValidationProfileRegistryVerifyOptions = z.infer<
+  typeof verifyOptionsSchema
+>;
 
 export interface ValidationProfileRegistry {
   register(registration: unknown): void;
@@ -65,99 +78,28 @@ interface ProfileSnapshot {
   validator: TrustValidator;
 }
 
-function assertRegistrationShape(
-  input: unknown
-): asserts input is ValidationProfileRegistration {
-  if (input === null || typeof input !== "object" || Array.isArray(input)) {
-    throw invalidProfile("profile registration must be an object");
-  }
-  for (const key of Object.keys(input)) {
-    if (!["profile", "trustAnchors", "rules"].includes(key)) {
-      throw invalidProfile(
-        `profile registration contains unknown field "${key}"`
-      );
-    }
-  }
-  const { profile, trustAnchors } = input as {
-    profile?: unknown;
-    trustAnchors?: unknown;
-  };
-  if (
-    profile === null ||
-    typeof profile !== "object" ||
-    Array.isArray(profile)
-  ) {
-    throw invalidProfile("profile must be an object");
-  }
-  if (!Array.isArray(trustAnchors) || trustAnchors.length === 0) {
-    throw invalidProfile("trustAnchors must be a non-empty array");
-  }
-}
-
-function assertVerifyOptionsShape(
-  input: unknown
-): asserts input is ValidationProfileRegistryVerifyOptions {
-  if (input === null || typeof input !== "object" || Array.isArray(input)) {
-    throw new TypeError("verify options must be an object");
-  }
-  for (const key of Object.keys(input)) {
-    if (
-      ![
-        "profileId",
-        "profileVersion",
-        "certificateChain",
-        "checkDate"
-      ].includes(key)
-    ) {
-      throw new TypeError(`verify options contain unknown field "${key}"`);
-    }
-  }
-  const { profileId, profileVersion, certificateChain, checkDate } = input as {
-    profileId?: unknown;
-    profileVersion?: unknown;
-    certificateChain?: unknown;
-    checkDate?: unknown;
-  };
-  if (typeof profileId !== "string" || profileId.trim() === "") {
-    throw new TypeError("profileId must be a non-empty string");
-  }
-  if (profileVersion !== undefined) {
-    if (typeof profileVersion === "string") {
-      if (profileVersion.trim() === "") {
-        throw new TypeError("profileVersion must be a non-empty string");
-      }
-    } else if (
-      !Number.isSafeInteger(profileVersion) ||
-      (profileVersion as number) <= 0
-    ) {
-      throw new TypeError(
-        "profileVersion must be a string or positive integer"
-      );
-    }
-  }
-  if (!Array.isArray(certificateChain)) {
-    throw new TypeError("certificateChain must be an array");
-  }
-  if (checkDate !== undefined && !(checkDate instanceof Date)) {
-    throw new TypeError("checkDate must be a Date");
-  }
-}
-
 export function createValidationProfileRegistry(
   options: ValidationProfileRegistryOptions = {}
 ): ValidationProfileRegistry {
   const profiles = new Map<string, Map<string, ProfileSnapshot>>();
 
   return {
-    register(registration): void {
-      assertRegistrationShape(registration);
-      const profileInput = registration.profile;
-      const rules = normalizeRuleRegistrations(registration.rules);
-      // Compile once for duplicate/version validation; the validator compiles
-      // its own immutable copy for the lifetime of the registered snapshot.
-      const profile = compileValidationProfile(profileInput, {
-        registeredRuleNames: rules.map((rule) => rule.name)
-      });
+    register(input): void {
+      const registration = parseProfileInput(
+        registrationSchema,
+        input,
+        "profile registration"
+      );
+      let config: PreparedValidatorConfig;
+      try {
+        config = prepareValidatorConfig(registration);
+      } catch (error) {
+        if (error instanceof TypeError) {
+          throw invalidProfile("trustAnchors contains an invalid certificate");
+        }
+        throw error;
+      }
+      const { profile } = config;
       const profileId = profile.id;
       const versionKey = String(profile.version);
       let versions = profiles.get(profileId);
@@ -173,20 +115,7 @@ export function createValidationProfileRegistry(
           );
         }
       }
-      let trustAnchors: Uint8Array[];
-      try {
-        trustAnchors = registration.trustAnchors.map((anchor) =>
-          Uint8Array.from(new X509Certificate(anchor).raw)
-        );
-      } catch {
-        throw invalidProfile("trustAnchors contains an invalid certificate");
-      }
-      const validator = createTrustValidator({
-        ...options,
-        trustAnchors,
-        profile: profileInput,
-        rules
-      });
+      const validator = createPreparedTrustValidator({ ...options, ...config });
       if (!versions) {
         versions = new Map();
         profiles.set(profileId, versions);
@@ -198,8 +127,10 @@ export function createValidationProfileRegistry(
       });
     },
 
-    async verify(request): Promise<ValidationResult> {
-      assertVerifyOptionsShape(request);
+    async verify(input): Promise<ValidationResult> {
+      const parsed = verifyOptionsSchema.safeParse(input);
+      if (!parsed.success) throw new TypeError(z.prettifyError(parsed.error));
+      const request = parsed.data;
       const versions = profiles.get(request.profileId);
       if (!versions) {
         return {

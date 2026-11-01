@@ -1,3 +1,4 @@
+// Creates library errors and maps revocation failures to diagnostic codes.
 export type ProfileErrorCode = "INVALID_PROFILE" | "UNSUPPORTED_PROFILE";
 
 export class ProfileError extends Error {
@@ -25,4 +26,24 @@ export class ResourceLimitError extends Error {
     super(message);
     this.name = "ResourceLimitError";
   }
+}
+
+export function revocationErrorCode(error: unknown): string {
+  if (error instanceof ResourceLimitError) return error.code;
+  if (error instanceof Error) {
+    if (
+      error.name === "TimeoutError" ||
+      (error.name === "AbortError" &&
+        error.cause instanceof Error &&
+        error.cause.name === "TimeoutError")
+    ) {
+      return "EVIDENCE_TIMEOUT";
+    }
+    if (error.name === "AbortError") return "EVIDENCE_ABORTED";
+  }
+  return "EVIDENCE_CHECK_FAILED";
+}
+
+export function abortError(): DOMException {
+  return new DOMException("The operation was aborted", "AbortError");
 }

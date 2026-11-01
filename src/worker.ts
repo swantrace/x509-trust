@@ -1,3 +1,4 @@
+// Exports the optional worker-backed PKI engine API.
 export type {
   PkiEngine,
   PreparedCertificate,

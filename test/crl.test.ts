@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import { X509Certificate } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { BitString } from "asn1js";
+import { BitString, OctetString } from "asn1js";
 import {
   Certificate,
   CertificateRevocationList,
@@ -13,77 +11,65 @@ import {
   id_KeyUsage
 } from "pkijs";
 import { validateCrl } from "../src/engine/crl.ts";
+import {
+  fixtureTime,
+  readCertificateDer,
+  readCrl
+} from "./helpers/fixtures.ts";
 
-function readFixture(name: string): string {
-  return readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
-}
-
-function readCertificate(name: string): Certificate {
-  return Certificate.fromBER(
-    new X509Certificate(readFixture(`${name}.pem`)).raw
-  );
-}
-
-function readCrl(name: string) {
-  return Buffer.from(
-    readFixture(`crl/${name}.crl.pem`).replace(/-----[^\n]+-----/g, ""),
-    "base64"
-  );
-}
-
-const certificate = readCertificate("leaf");
-const issuerCertificate = readCertificate("intermediate");
-const checkDate = new Date(readFixture("validation-time.txt").trim());
+const certificateDer = readCertificateDer("leaf");
+const issuerDer = readCertificateDer("intermediate");
+const checkDateMs = fixtureTime;
 const crl = readCrl("intermediate-revoked");
 
 test("reports good when a valid CRL revokes a different certificate", async () => {
   const result = await validateCrl({
-    certificate,
-    issuerCertificate,
+    certificateDer,
+    issuerDer,
     crl,
-    checkDate
+    checkDateMs
   });
   assert.equal(result.status, "good");
-  assert.ok(result.thisUpdate <= checkDate);
-  assert.ok(result.nextUpdate > checkDate);
+  assert.ok(result.thisUpdate.getTime() <= checkDateMs);
+  assert.ok(result.nextUpdate.getTime() > checkDateMs);
 });
 
 test("reports revoked for the certificate listed in a valid signed CRL", async () => {
   const result = await validateCrl({
-    certificate: readCertificate("revoked-leaf"),
-    issuerCertificate,
+    certificateDer: readCertificateDer("revoked-leaf"),
+    issuerDer,
     crl,
-    checkDate
+    checkDateMs
   });
   assert.equal(result.status, "revoked");
 });
 
 test("uses the earlier clean CRL as its own snapshot of revocation status", async () => {
   const result = await validateCrl({
-    certificate: readCertificate("revoked-leaf"),
-    issuerCertificate,
+    certificateDer: readCertificateDer("revoked-leaf"),
+    issuerDer,
     crl: readCrl("intermediate-clean"),
-    checkDate
+    checkDateMs
   });
   assert.equal(result.status, "good");
 });
 
 test("checks intermediate certificate status using its root issuer's CRL", async () => {
   const result = await validateCrl({
-    certificate: issuerCertificate,
-    issuerCertificate: readCertificate("root"),
+    certificateDer: issuerDer,
+    issuerDer: readCertificateDer("root"),
     crl: readCrl("root"),
-    checkDate
+    checkDateMs
   });
   assert.equal(result.status, "good");
 });
 
 test("reports unknown for an expired CRL", async () => {
   const result = await validateCrl({
-    certificate,
-    issuerCertificate,
+    certificateDer,
+    issuerDer,
     crl: readCrl("intermediate-expired"),
-    checkDate
+    checkDateMs
   });
   assert.ok(result.status === "unknown");
   assert.equal(result.code, "CRL_EXPIRED");
@@ -96,10 +82,10 @@ test("reports unknown before thisUpdate and at the nextUpdate boundary", async (
     [parsed.nextUpdate!.value, "CRL_EXPIRED"]
   ] as const) {
     const result = await validateCrl({
-      certificate,
-      issuerCertificate,
+      certificateDer,
+      issuerDer,
       crl,
-      checkDate: date
+      checkDateMs: date.getTime()
     });
     assert.ok(result.status === "unknown");
     assert.equal(result.code, code);
@@ -108,28 +94,31 @@ test("reports unknown before thisUpdate and at the nextUpdate boundary", async (
 
 test("rejects a CRL issued by a different CA", async () => {
   const result = await validateCrl({
-    certificate,
-    issuerCertificate,
+    certificateDer,
+    issuerDer,
     crl: readCrl("root"),
-    checkDate
+    checkDateMs
   });
   assert.ok(result.status === "unknown");
   assert.equal(result.code, "CRL_ISSUER_MISMATCH");
 });
 
 test("rejects an issuer whose key usage does not permit CRL signing", async () => {
-  const issuer = readCertificate("intermediate");
+  const issuer = Certificate.fromBER(readCertificateDer("intermediate"));
   const keyUsage = issuer.extensions!.find(
     (extension) => extension.extnID === id_KeyUsage
   )!;
   keyUsage.parsedValue = new BitString({
     valueHex: new Uint8Array([0x04]).buffer
   });
+  keyUsage.extnValue = new OctetString({
+    valueHex: keyUsage.parsedValue.toBER(false)
+  });
   const result = await validateCrl({
-    certificate,
-    issuerCertificate: issuer,
+    certificateDer,
+    issuerDer: new Uint8Array(issuer.toSchema(true).toBER(false)),
     crl,
-    checkDate
+    checkDateMs
   });
   assert.ok(result.status === "unknown");
   assert.equal(result.code, "CRL_ISSUER_NOT_AUTHORIZED");
@@ -139,10 +128,10 @@ test("rejects a modified CRL signature", async () => {
   const modified = Buffer.from(crl);
   modified[modified.length - 1] ^= 1;
   const result = await validateCrl({
-    certificate,
-    issuerCertificate,
+    certificateDer,
+    issuerDer,
     crl: modified,
-    checkDate
+    checkDateMs
   });
   assert.ok(result.status === "unknown");
   assert.equal(result.code, "INVALID_CRL_SIGNATURE");
@@ -150,10 +139,10 @@ test("rejects a modified CRL signature", async () => {
 
 test("reports unknown for malformed CRL data", async () => {
   const result = await validateCrl({
-    certificate,
-    issuerCertificate,
+    certificateDer,
+    issuerDer,
     crl: Buffer.from("not a CRL"),
-    checkDate
+    checkDateMs
   });
   assert.ok(result.status === "unknown");
   assert.equal(result.code, "INVALID_CRL");
@@ -163,10 +152,10 @@ test("requires nextUpdate instead of accepting a CRL indefinitely", async () => 
   const parsed = CertificateRevocationList.fromBER(crl);
   delete parsed.nextUpdate;
   const result = await validateCrl({
-    certificate,
-    issuerCertificate,
+    certificateDer,
+    issuerDer,
     crl: new Uint8Array(parsed.toSchema(true).toBER(false)),
-    checkDate
+    checkDateMs
   });
   assert.ok(result.status === "unknown");
   assert.equal(result.code, "CRL_MISSING_NEXT_UPDATE");
@@ -188,24 +177,23 @@ for (const extnID of [
       })
     );
     const result = await validateCrl({
-      certificate,
-      issuerCertificate,
+      certificateDer,
+      issuerDer,
       crl: new Uint8Array(parsed.toSchema(true).toBER(false)),
-      checkDate
+      checkDateMs
     });
     assert.ok(result.status === "unknown");
     assert.equal(result.code, "UNSUPPORTED_CRL");
   });
 }
 
-test("rejects an invalid check date", async () => {
-  await assert.rejects(
-    validateCrl({
-      certificate,
-      issuerCertificate,
-      crl,
-      checkDate: new Date(NaN)
-    }),
-    TypeError
-  );
+test("reports unknown for an invalid validation timestamp", async () => {
+  const result = await validateCrl({
+    certificateDer,
+    issuerDer,
+    crl,
+    checkDateMs: NaN
+  });
+  assert.equal(result.status, "unknown");
+  assert.equal(result.status === "unknown" && result.code, "INVALID_CRL");
 });

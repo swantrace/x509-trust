@@ -1,10 +1,13 @@
+// Validates rule registrations and applies built-in and custom rules to trusted certificate facts.
+import { z } from "zod";
 import type {
   CertificateFacts,
   KeyUsageName,
   ValidatedLeafCertificate
 } from "../engine/leaf-certificate.ts";
-import { invalidProfile, unsupportedProfile } from "../errors.ts";
+import { unsupportedProfile } from "../errors.ts";
 import type { CompiledValidationProfile } from "./profile.ts";
+import { nonEmptyString, parseProfileInput } from "./validation.ts";
 
 export interface RuleLeafFacts {
   fingerprint256: string;
@@ -42,10 +45,24 @@ export type TrustRule = (
   context: TrustRuleContext
 ) => TrustRuleResult | Promise<TrustRuleResult>;
 
-export interface TrustRuleRegistration {
-  name: string;
-  check: TrustRule;
-}
+const ruleRegistrationsSchema = z
+  .array(
+    z.strictObject({
+      name: nonEmptyString,
+      check: z.custom<TrustRule>(
+        (value) => typeof value === "function",
+        "must be a function"
+      )
+    })
+  )
+  .refine(
+    (rules) => new Set(rules.map((rule) => rule.name)).size === rules.length,
+    "must not contain duplicate rule names"
+  );
+
+export type TrustRuleRegistration = z.infer<
+  typeof ruleRegistrationsSchema
+>[number];
 
 function freezeList<T>(
   values: readonly T[] | undefined
@@ -83,34 +100,11 @@ function toRulePathFacts(facts: CertificateFacts): RulePathFacts {
 export function normalizeRuleRegistrations(
   input: unknown
 ): TrustRuleRegistration[] {
-  if (input === undefined) return [];
-  if (!Array.isArray(input)) {
-    throw invalidProfile("rules must be an array");
-  }
-  const names = new Set<string>();
-  return input.map((entry, index) => {
-    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-      throw invalidProfile(`rules[${index}] must be an object`);
-    }
-    for (const key of Object.keys(entry)) {
-      if (!["name", "check"].includes(key)) {
-        throw invalidProfile(`rules[${index}] contains unknown field "${key}"`);
-      }
-    }
-    const name = (entry as { name?: unknown }).name;
-    const check = (entry as { check?: unknown }).check;
-    if (typeof name !== "string" || name.trim() === "") {
-      throw invalidProfile(`rules[${index}].name must be a non-empty string`);
-    }
-    if (names.has(name)) {
-      throw invalidProfile(`Duplicate registered rule name: ${name}`);
-    }
-    if (typeof check !== "function") {
-      throw invalidProfile(`rules[${index}].check must be a function`);
-    }
-    names.add(name);
-    return { name, check: check as TrustRule };
-  });
+  return parseProfileInput(
+    ruleRegistrationsSchema,
+    input === undefined ? [] : input,
+    "rules"
+  );
 }
 
 function ruleResultMessage(name: string, result: unknown): string | undefined {

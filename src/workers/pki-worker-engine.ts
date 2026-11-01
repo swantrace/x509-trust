@@ -1,10 +1,11 @@
+// Runs PKI operations in a bounded worker pool with cancellation, timeouts, and lifecycle controls.
 import { X509Certificate } from "node:crypto";
 import { availableParallelism } from "node:os";
 import { Piscina } from "piscina";
 import type { CrlValidationResult } from "../engine/crl.ts";
 import type { OcspValidationResult } from "../engine/ocsp.ts";
 import type { PkiEngine, PreparedPathResult } from "../engine/pki-engine.ts";
-import { ResourceLimitError } from "../errors.ts";
+import { abortError, ResourceLimitError } from "../errors.ts";
 import type { PkiWorkerResult, PkiWorkerTask } from "./pki-worker-protocol.ts";
 
 export interface PkiWorkerEngineOptions {
@@ -28,10 +29,6 @@ export interface PkiWorkerEngine extends PkiEngine {
   close(options?: { force?: boolean }): Promise<void>;
   destroy(): Promise<void>;
   stats(): PkiWorkerStats;
-}
-
-function abortError(): DOMException {
-  return new DOMException("The operation was aborted", "AbortError");
 }
 
 function defaultFilename(): URL {
