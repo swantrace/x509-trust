@@ -1,3 +1,4 @@
+// Builds and validates certificate paths against configured trust anchors using PKI.js.
 import { X509Certificate } from "node:crypto";
 import { Certificate, CertificateChainValidationEngine } from "pkijs";
 

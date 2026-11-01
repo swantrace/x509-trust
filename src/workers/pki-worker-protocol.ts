@@ -1,3 +1,4 @@
+// Defines the task and result messages exchanged with PKI worker threads.
 import type { CrlValidationResult } from "../engine/crl.ts";
 import type { OcspValidationResult } from "../engine/ocsp.ts";
 import type { PreparedPathResult } from "../engine/pki-engine.ts";

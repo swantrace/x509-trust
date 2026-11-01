@@ -1,3 +1,4 @@
+// Exports the public certificate validation, revocation, and profile APIs.
 export type { DiagnosticCallback, DiagnosticEvent } from "./diagnostics.ts";
 export type { CertificateInput } from "./engine/certificate-path.ts";
 export {

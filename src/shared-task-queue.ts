@@ -1,3 +1,6 @@
+// Shares pending tasks by key while allowing each subscriber to cancel independently.
+import { abortError } from "./errors.ts";
+
 export interface SharedTaskQueue<Input, T> {
   /** Submit or join a task; execution is delegated to the configured executor. */
   add(
@@ -5,10 +8,6 @@ export interface SharedTaskQueue<Input, T> {
     input: Input,
     options?: { signal?: AbortSignal }
   ): Promise<T>;
-}
-
-function abortError(): DOMException {
-  return new DOMException("The operation was aborted", "AbortError");
 }
 
 class SharedTask<T> {

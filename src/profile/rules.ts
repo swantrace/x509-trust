@@ -1,3 +1,4 @@
+// Validates rule registrations and applies built-in and custom rules to trusted certificate facts.
 import { z } from "zod";
 import type {
   CertificateFacts,

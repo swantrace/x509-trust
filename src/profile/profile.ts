@@ -1,3 +1,4 @@
+// Validates and compiles immutable trust profiles with defaults and cross-field checks.
 import { z } from "zod";
 import type { KeyUsageName } from "../engine/leaf-certificate.ts";
 import { invalidProfile, unsupportedProfile } from "../errors.ts";

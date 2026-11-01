@@ -1,67 +1,23 @@
+// Authenticates direct-issuer OCSP responses and checks certificate status and freshness.
 import {
   BasicOCSPResponse,
-  CertID,
   Certificate,
-  getAlgorithmByOID,
   id_PKIX_OCSP_Basic,
   OCSPResponse,
   type SingleResponse
 } from "pkijs";
 import { parseDer } from "./der.ts";
+import {
+  matchingResponses,
+  type OcspValidationResult,
+  unknownOcspStatus
+} from "./ocsp-response.ts";
+
+export type { OcspValidationResult } from "./ocsp-response.ts";
 
 const OCSP_RESPONSE_SUCCESSFUL = 0;
 const OCSP_STATUS_GOOD = 0;
 const OCSP_STATUS_REVOKED = 1;
-
-type OcspFailureCode =
-  | "INVALID_OCSP_RESPONSE"
-  | "OCSP_RESPONDER_ERROR"
-  | "UNSUPPORTED_OCSP_RESPONSE"
-  | "OCSP_ISSUER_MISMATCH"
-  | "OCSP_CERTIFICATE_MISMATCH"
-  | "INVALID_OCSP_SIGNATURE"
-  | "OCSP_RESPONDER_VERIFICATION_FAILED"
-  | "OCSP_NOT_YET_VALID"
-  | "OCSP_EXPIRED"
-  | "OCSP_MISSING_NEXT_UPDATE"
-  | "OCSP_STATUS_UNKNOWN";
-
-export type OcspValidationResult =
-  | {
-      status: "good" | "revoked";
-      thisUpdate: Date;
-      nextUpdate: Date;
-      checkedAt: Date;
-    }
-  | { status: "unknown"; code: OcspFailureCode; message: string };
-
-function unknownOcspStatus(
-  code: OcspFailureCode,
-  message: string
-): OcspValidationResult {
-  return { status: "unknown", code, message };
-}
-
-async function matchingResponses(
-  response: BasicOCSPResponse,
-  certificate: Certificate,
-  issuerCertificate: Certificate
-): Promise<SingleResponse[]> {
-  const matches: SingleResponse[] = [];
-  for (const single of response.tbsResponseData.responses) {
-    const algorithm = getAlgorithmByOID(
-      single.certID.hashAlgorithm.algorithmId,
-      true
-    );
-    const expected = await CertID.create(certificate, {
-      issuerCertificate,
-      hashAlgorithm: algorithm.name
-    });
-    if (single.certID.isEqual(expected)) matches.push(single);
-  }
-  return matches;
-}
-
 // Certificate and issuer must belong to a previously validated certificate path.
 export async function validateOcsp({
   certificateDer,

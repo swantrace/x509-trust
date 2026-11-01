@@ -1,3 +1,4 @@
+// Dispatches worker-thread PKI tasks to the inline engine.
 import { inlinePkiEngine } from "../engine/pki-engine.ts";
 import type { PkiWorkerResult, PkiWorkerTask } from "./pki-worker-protocol.ts";
 

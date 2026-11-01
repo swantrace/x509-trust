@@ -1,3 +1,4 @@
+// Registers immutable profile versions and selects the validator for each verification request.
 import { z } from "zod";
 import type { DiagnosticCallback } from "../diagnostics.ts";
 import type { CertificateInput } from "../engine/certificate-path.ts";
@@ -11,7 +12,6 @@ import type {
 } from "../revocation/revocation-provider.ts";
 import {
   createPreparedTrustValidator,
-  prepareValidatorConfig,
   type TrustValidator,
   type ValidationResult
 } from "../trust-validator.ts";
@@ -22,6 +22,10 @@ import {
   parseProfileInput,
   profileVersionSchema
 } from "./validation.ts";
+import {
+  type PreparedValidatorConfig,
+  prepareValidatorConfig
+} from "./validator-config.ts";
 
 export interface ValidationProfileRegistration {
   profile: ValidationProfileInput;
@@ -86,7 +90,7 @@ export function createValidationProfileRegistry(
         input,
         "profile registration"
       );
-      let config: ReturnType<typeof prepareValidatorConfig>;
+      let config: PreparedValidatorConfig;
       try {
         config = prepareValidatorConfig(registration);
       } catch (error) {

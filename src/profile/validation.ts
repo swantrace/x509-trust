@@ -1,3 +1,4 @@
+// Provides shared profile schemas and translates schema failures into profile errors.
 import { z } from "zod";
 import { invalidProfile, unsupportedProfile } from "../errors.ts";
 

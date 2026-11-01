@@ -1,7 +1,19 @@
+// Defines revocation data types and decides status from the profile's evidence requirements.
 import type {
   RequiredEvidence,
   RevocationMechanism
 } from "../profile/profile.ts";
+
+export interface SourceCheckOptions {
+  mechanism: "crl" | "ocsp";
+  certificateDer: Uint8Array;
+  issuerDer: Uint8Array;
+  source: string;
+  signal?: AbortSignal;
+  checkDateMs?: number;
+  certificateIndex?: number;
+  ocspRequestDer?: Uint8Array;
+}
 
 export interface RevocationSummary {
   certificateIndex: number;

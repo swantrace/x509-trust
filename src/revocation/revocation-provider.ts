@@ -1,3 +1,4 @@
+// Shares CRL and OCSP downloads by request identity and limits concurrent requests.
 import { createHash } from "node:crypto";
 import PQueue from "p-queue";
 import { createSharedTaskQueue } from "../shared-task-queue.ts";

@@ -1,3 +1,4 @@
+// Creates library errors and maps revocation failures to diagnostic codes.
 export type ProfileErrorCode = "INVALID_PROFILE" | "UNSUPPORTED_PROFILE";
 
 export class ProfileError extends Error {
@@ -41,4 +42,8 @@ export function revocationErrorCode(error: unknown): string {
     if (error.name === "AbortError") return "EVIDENCE_ABORTED";
   }
   return "EVIDENCE_CHECK_FAILED";
+}
+
+export function abortError(): DOMException {
+  return new DOMException("The operation was aborted", "AbortError");
 }

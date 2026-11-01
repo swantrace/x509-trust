@@ -1,3 +1,4 @@
+// Snapshots DER input and enforces size and single-value parsing limits.
 import { fromBER } from "asn1js";
 
 const MAX_DER_BYTES = 1024 * 1024;

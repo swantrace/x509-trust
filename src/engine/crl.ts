@@ -1,3 +1,4 @@
+// Authenticates direct, complete CRLs and checks certificate revocation status and freshness.
 import { BitString } from "asn1js";
 import {
   Certificate,

@@ -1,3 +1,4 @@
+// Defines asynchronous cache storage and provides a bounded in-memory cache with expiration.
 export interface CacheStore {
   get(key: string): Promise<string | null>;
   set(key: string, value: string, ttlMs: number): Promise<void>;
